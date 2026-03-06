@@ -16,8 +16,10 @@ def main():
     notifier = DiscordNotifier()
 
     print("Fetching global batter stats from Statcast...")
-    # Fetching the whole dataframe locally for fast in-memory heuristic lookups
-    batter_stats_df = ingestor.fetch_batter_stats()
+    batter_stats_df = ingestor.fetch_batter_stats(year=2024)
+    
+    print("Fetching global pitcher stats from Statcast...")
+    pitcher_stats_df = ingestor.fetch_pitcher_stats(year=2024)
 
     print("Fetching live odds from The Odds API...")
     events = ingestor.fetch_player_props_odds()
@@ -43,14 +45,18 @@ def main():
                         
                         # Generate True Probability based on the ML Model
                         # Our ML model supports: batter_home_runs, batter_hits, batter_total_bases_1.5, batter_strikeouts
+                        # And Pitcher markets: pitcher_strikeouts, pitcher_outs, pitcher_hits_allowed, pitcher_walks_allowed
                         
                         # We map the Odds API market text to our internal model names
                         ml_market = market_name
                         if market_name == 'batter_total_bases': ml_market = 'batter_total_bases_1.5'
                         
+                        supported_markets = ['batter_home_runs', 'batter_hits', 'batter_total_bases_1.5', 'batter_strikeouts',
+                                             'pitcher_strikeouts', 'pitcher_outs', 'pitcher_hits_allowed', 'pitcher_walks_allowed']
+                        
                         # Only run if we actually trained a model for this
-                        if ml_market in ['batter_home_runs', 'batter_hits', 'batter_total_bases_1.5', 'batter_strikeouts']:
-                             true_prob = ev_calculator.generate_true_prob(ml_market, player_name, batter_stats_df, None)
+                        if ml_market in supported_markets:
+                             true_prob = ev_calculator.generate_true_prob(ml_market, player_name, batter_stats_df, pitcher_stats_df)
                              
                              # Check Edge
                              ev_result = ev_calculator.check_ev(true_prob, implied_prob)

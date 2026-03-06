@@ -10,7 +10,11 @@ expected_markets = [
     'batter_home_runs', 
     'batter_hits', 
     'batter_total_bases_1.5', 
-    'batter_strikeouts'
+    'batter_strikeouts',
+    'pitcher_strikeouts',
+    'pitcher_outs',
+    'pitcher_hits_allowed',
+    'pitcher_walks_allowed'
 ]
 
 for market in expected_markets:
@@ -29,63 +33,76 @@ def calculate_implied_prob(american_odds: int) -> float:
         return odds_abs / (odds_abs + 100)
     return 0.0
 
-def _get_rolling_stat(batter_name, batter_df, stat_col):
-     """Helper: Extracts the most recent 10-game rolling average for the batter."""
-     if batter_df is None or batter_df.empty:
+def _get_rolling_stat(player_name, stats_df, stat_col):
+     """Helper: Extracts the most recent rolled average for the player."""
+     if stats_df is None or stats_df.empty:
           return 0.0
           
-     batter_row = batter_df[batter_df['Name'] == batter_name]
-     if batter_row.empty:
+     player_row = stats_df[stats_df['Name'] == player_name]
+     if player_row.empty:
           return 0.0
           
-     # In a full production system, this `batter_df` would be the live pybaseball dataframe,
-     # and we would calculate the rolling_10 for each specific column.
-     # For this prototype, we mock the current rolling inputs based on 2024 season averages
-     # so the ML model has data to predict on.
      try:
-         # Statcast often uses specific column names like 'PA', 'AB', 'HR'
-         val = float(batter_row.iloc[0].get(stat_col, 0.0))
+         val = float(player_row.iloc[0].get(stat_col, 0.0))
          if pd.isna(val): return 0.0
          return val
      except Exception:
          return 0.0
 
-def generate_true_prob(market_name, batter_name, batter_df, pitcher_df=None):
+def generate_true_prob(market_name, player_name, batter_df, pitcher_df=None):
     """
-    Given a Live Sportsbook market (e.g., 'batter_home_runs'),
-    this function uses our Calibrated Random Forest ML Model to output the true probability.
+    Given a Live Sportsbook market (e.g., 'batter_home_runs' or 'pitcher_strikeouts'),
+    this function uses our Calibrated Random Forest ML Models to output the true probability.
     """
-    # If the model doesn't exist for this market, fallback to 0
     if market_name not in models:
          return 0.00
          
     clf = models[market_name]
     
-    # Construct the Live Input Features array for the ML Model
-    # The models were trained on: 'rolling_10_PA', 'rolling_10_AB', 'rolling_10_H', 'rolling_10_HR', 'rolling_10_SO', 'rolling_10_TB'
-    # For prototype testing, we simulate these rolling 10-game stats using their actual statcast inputs
+    # ---------------------------------------------------------
+    # BATTER PIPELINE INFERENCE
+    # ---------------------------------------------------------
+    if market_name.startswith('batter'):
+        games_played = _get_rolling_stat(player_name, batter_df, 'G')
+        if games_played == 0: games_played = 1 
+        
+        live_features = {
+            'rolling_10_PA': _get_rolling_stat(player_name, batter_df, 'PA') / games_played * 10,
+            'rolling_10_AB': _get_rolling_stat(player_name, batter_df, 'AB') / games_played * 10,
+            'rolling_10_H': _get_rolling_stat(player_name, batter_df, 'H') / games_played * 10,
+            'rolling_10_HR': _get_rolling_stat(player_name, batter_df, 'HR') / games_played * 10,
+            'rolling_10_SO': _get_rolling_stat(player_name, batter_df, 'SO') / games_played * 10,
+            'rolling_10_TB': _get_rolling_stat(player_name, batter_df, 'TB') / games_played * 10,
+        }
     
-    # We fetch their season totals and divide by games played (G) to simulate average per game
-    games_played = _get_rolling_stat(batter_name, batter_df, 'G')
-    if games_played == 0: games_played = 1 # prevent divide by zero
+    # ---------------------------------------------------------
+    # PITCHER PIPELINE INFERENCE
+    # ---------------------------------------------------------
+    elif market_name.startswith('pitcher'):
+        games_played = _get_rolling_stat(player_name, pitcher_df, 'G')
+        if games_played == 0: games_played = 1
+        
+        # Calculate simulated 5-game rolling features using season averages
+        # (For prototypes only – in production use exact rolling logs)
+        # BF = Batters Faced (Mocked roughly using IP)
+        ip = _get_rolling_stat(player_name, pitcher_df, 'IP')
+        mock_bf = (ip * 3.5) / games_played * 5 
+        
+        live_features = {
+            'rolling_5_BF': mock_bf,
+            'rolling_5_SO': _get_rolling_stat(player_name, pitcher_df, 'SO') / games_played * 5,
+            'rolling_5_BBA': _get_rolling_stat(player_name, pitcher_df, 'BB') / games_played * 5,
+            'rolling_5_HA': _get_rolling_stat(player_name, pitcher_df, 'H') / games_played * 5,
+            'rolling_5_Outs': (ip * 3) / games_played * 5 # IP * 3 = Total Outs
+        }
+    else:
+        return 0.00
     
-    live_features = {
-        'rolling_10_PA': _get_rolling_stat(batter_name, batter_df, 'PA') / games_played * 10,
-        'rolling_10_AB': _get_rolling_stat(batter_name, batter_df, 'AB') / games_played * 10,
-        'rolling_10_H': _get_rolling_stat(batter_name, batter_df, 'H') / games_played * 10,
-        'rolling_10_HR': _get_rolling_stat(batter_name, batter_df, 'HR') / games_played * 10,
-        'rolling_10_SO': _get_rolling_stat(batter_name, batter_df, 'SO') / games_played * 10,
-        'rolling_10_TB': _get_rolling_stat(batter_name, batter_df, 'TB') / games_played * 10,
-    }
-    
-    # Pandas dataframe to feed into Scikit-learn
+    # Predict Probability using Scikit-Learn
     X_live = pd.DataFrame([live_features])
-    
-    # Model returns an array of [[Prob_Class_0, Prob_Class_1]]
-    # We want Prob_Class_1 (The chance they HIT the prop)
     true_prob = clf.predict_proba(X_live)[0][1]
     
-    # Mocking a slight artificial edge just so we can trigger the Discord alert for testing
+    # Mocking a slight artificial edge just to force a Discord alert output payload during testing
     true_prob += 0.20 
     
     return float(true_prob)

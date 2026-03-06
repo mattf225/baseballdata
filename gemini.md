@@ -15,7 +15,7 @@
 
 ## Integrations & Services
 * **MLB Data (Baseline):** `pybaseball` library to scrape Statcast (pitch types, exit velocity) and `python-mlb-statsapi` (weather, stadium dimensions).
-* **Sportsbook Odds API:** `The Odds API` for live MLB player props (`batter_home_runs`, `batter_total_bases`, `batter_hits`, `batter_runs_scored`, `batter_rbis`, `pitcher_strikeouts`, `pitcher_outs`).
+* **Sportsbook Odds API:** `The Odds API` for live MLB player props (`batter_home_runs`, `batter_total_bases`, `batter_hits`, `batter_runs_scored`, `batter_rbis`, `pitcher_strikeouts`, `pitcher_outs`, `pitcher_hits_allowed`, `pitcher_walks_allowed`).
 * **Messaging/Notification:** Send real-time alerts to Discord Webhook.
 * **Relational Database:** Supabase (PostgreSQL) housing 3 core tables: `mlb_historical_performance`, `mlb_daily_probabilities`, `mlb_alert_log`.
 
