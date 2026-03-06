@@ -68,6 +68,6 @@
 
 ## Maintenance Log & Automation Strategy
 * **Local Run:** `python3 run_mlb_pipeline.py`
-* **Scheduled Trigger:** The pipeline runs on a 30-minute GitHub Actions Cron Schedule (`.github/workflows/mlb_cron.yml`) during active MLB hours (12pm-11pm EST).
+* **Scheduled Trigger:** The pipeline runs on an hourly GitHub Actions Cron Schedule (`.github/workflows/mlb_cron.yml`) during active MLB hours (12pm-2am EST), capped at 15 runs per day.
 * **Container:** A `Dockerfile` and `requirements.txt` are included to allow hosting the script on any containerized cloud server (e.g. Render, AWS, Google Cloud Run) natively.
 * **Updates:** Before each MLB season, re-run `model/build_dataset.py` followed by `model/train_model.py` to bake in the newest statistical baselines into the Machine Learning prediction `.pkl` files.

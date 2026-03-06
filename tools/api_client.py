@@ -28,8 +28,9 @@ class DataIngestor:
         # Step 2: Fetch Player Props for each event
         for event in events:
              event_id = event['id']
-             # Markets: batter_home_runs, pitcher_strikeouts
-             odds_url = f"https://api.the-odds-api.com/v4/sports/baseball_mlb/events/{event_id}/odds?apiKey={ODDS_API_KEY}&regions=us&markets=batter_home_runs,pitcher_strikeouts&oddsFormat=american"
+             # Fetching all markets we built ML Models for, plus standard pitcher props
+             markets = "batter_home_runs,batter_hits,batter_total_bases,batter_strikeouts,pitcher_strikeouts,pitcher_outs"
+             odds_url = f"https://api.the-odds-api.com/v4/sports/baseball_mlb/events/{event_id}/odds?apiKey={ODDS_API_KEY}&regions=us&markets={markets}&oddsFormat=american"
              odds_res = requests.get(odds_url)
              if odds_res.status_code == 200:
                   event_odds = odds_res.json()
