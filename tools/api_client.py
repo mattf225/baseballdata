@@ -11,6 +11,8 @@ ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
 # Enable pybaseball cache once at module level (global config, not per-instance)
 pybaseball.cache.enable()
 
+GAME_LINE_MARKETS = "h2h,spreads,totals"
+
 PROP_MARKETS = (
     "batter_home_runs,batter_hits,batter_total_bases,batter_strikeouts,"
     "pitcher_strikeouts,pitcher_outs,pitcher_hits_allowed,pitcher_walks_allowed"
@@ -60,23 +62,33 @@ class DataIngestor:
                 return []
 
         all_odds = []
-        # Step 2: Fetch Player Props for each event
+        # Step 2: Fetch game lines + player props for each event, merged per bookmaker
         for event in events:
             event_id = event['id']
-            odds_res = requests.get(
-                f"https://api.the-odds-api.com/v4/sports/baseball_mlb/events/{event_id}/odds",
-                params={
-                    "apiKey": ODDS_API_KEY,
-                    "regions": "us",
-                    "markets": PROP_MARKETS,
-                    "oddsFormat": "american"
-                },
-                timeout=10
-            )
-            if odds_res.status_code == 200:
-                all_odds.append(odds_res.json())
-            else:
-                print(f"Failed to fetch odds for event {event_id}: {odds_res.status_code}")
+            book_index = {}  # bookmaker_key -> {key, markets: [...]}
+
+            for markets_str in [GAME_LINE_MARKETS, PROP_MARKETS]:
+                res = requests.get(
+                    f"https://api.the-odds-api.com/v4/sports/baseball_mlb/events/{event_id}/odds",
+                    params={
+                        "apiKey": ODDS_API_KEY,
+                        "regions": "us",
+                        "markets": markets_str,
+                        "oddsFormat": "american"
+                    },
+                    timeout=10
+                )
+                if res.status_code == 200:
+                    for bm in res.json().get("bookmakers", []):
+                        if bm["key"] not in book_index:
+                            book_index[bm["key"]] = {"key": bm["key"], "title": bm.get("title", bm["key"]), "markets": []}
+                        book_index[bm["key"]]["markets"].extend(bm.get("markets", []))
+                else:
+                    print(f"Failed to fetch {markets_str} for event {event_id}: {res.status_code}")
+
+            if book_index:
+                merged = {**event, "bookmakers": list(book_index.values())}
+                all_odds.append(merged)
 
         return all_odds
 

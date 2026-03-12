@@ -88,7 +88,10 @@ def main():
     for event in events:
         if 'bookmakers' not in event:
             continue
-        game_date = event.get('commence_time', fetched_at)[:10]
+        game_date      = event.get('commence_time', fetched_at)[:10]
+        home_team      = event.get('home_team')
+        away_team      = event.get('away_team')
+        commence_time  = event.get('commence_time')
         for bookmaker in event['bookmakers']:
             for market in bookmaker['markets']:
                 for outcome in market['outcomes']:
@@ -96,10 +99,14 @@ def main():
                         odds_archive.append({
                             "event_id":      event['id'],
                             "game_date":     game_date,
+                            "home_team":     home_team,
+                            "away_team":     away_team,
+                            "commence_time": commence_time,
                             "player_name":   outcome['name'],
                             "market":        market['key'],
                             "sportsbook":    bookmaker['key'],
                             "odds_american": int(outcome['price']),
+                            "point":         outcome.get('point'),
                             "implied_prob":  round(ev_calculator.calculate_implied_prob(outcome['price']), 6),
                             "fetched_at":    fetched_at,
                         })
