@@ -1,7 +1,7 @@
 import sys
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "tools"))
 
@@ -28,14 +28,31 @@ logger = logging.getLogger(__name__)
 
 REQUIRED_ENV_VARS = ["ODDS_API_KEY", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "DISCORD_WEBHOOK_URL"]
 
+# MLB regular season: April 1 – October 15
+SEASON_START_MONTH, SEASON_START_DAY = 4, 1
+SEASON_END_MONTH,   SEASON_END_DAY   = 10, 15
+
 def validate_env():
     """Fail fast if any required environment variable is missing."""
     missing = [v for v in REQUIRED_ENV_VARS if not os.environ.get(v)]
     if missing:
         raise EnvironmentError(f"Missing required environment variables: {', '.join(missing)}")
 
+def is_regular_season() -> bool:
+    """Returns True if today falls within the MLB regular season window."""
+    today = datetime.now()
+    m, d = today.month, today.day
+    after_start = (m > SEASON_START_MONTH) or (m == SEASON_START_MONTH and d >= SEASON_START_DAY)
+    before_end  = (m < SEASON_END_MONTH)   or (m == SEASON_END_MONTH   and d <= SEASON_END_DAY)
+    return after_start and before_end
+
 def main():
     logger.info("Initializing B.L.A.S.T. MLB Pipeline...")
+
+    if not is_regular_season() and not os.environ.get("ALLOW_SPRING_TRAINING"):
+        logger.info("Outside MLB regular season (Apr 1 – Oct 15). Pipeline exiting — spring training and off-season games are not supported.")
+        logger.info("Set ALLOW_SPRING_TRAINING=true in .env to override for testing.")
+        return
 
     validate_env()
 
@@ -64,6 +81,30 @@ def main():
     if pitcher_stats_df is None:
         logger.error("Failed to fetch pitcher stats. Exiting pipeline.")
         return
+
+    # Step 3: Archive all odds to mlb_odds_log before processing
+    fetched_at = datetime.now(timezone.utc).isoformat()
+    odds_archive = []
+    for event in events:
+        if 'bookmakers' not in event:
+            continue
+        game_date = event.get('commence_time', fetched_at)[:10]
+        for bookmaker in event['bookmakers']:
+            for market in bookmaker['markets']:
+                for outcome in market['outcomes']:
+                    if abs(outcome['price']) <= 50000:
+                        odds_archive.append({
+                            "event_id":      event['id'],
+                            "game_date":     game_date,
+                            "player_name":   outcome['name'],
+                            "market":        market['key'],
+                            "sportsbook":    bookmaker['key'],
+                            "odds_american": int(outcome['price']),
+                            "implied_prob":  round(ev_calculator.calculate_implied_prob(outcome['price']), 6),
+                            "fetched_at":    fetched_at,
+                        })
+    db.log_odds_batch(odds_archive)
+    logger.info(f"Archived {len(odds_archive):,} odds snapshots to mlb_odds_log.")
 
     # For every event (game)
     for event in events:

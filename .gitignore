@@ -1,0 +1,41 @@
+# Secrets — never commit
+.env
+.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# pybaseball cache
+.pybaseball/
+
+# Trained model artifacts (large binary files — regenerate with train_model.py)
+model/trained_models/*.pkl
+
+# Training data (regenerate with build_dataset.py)
+model/data/
+
+# Logs
+logs/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# macOS
+.DS_Store
+
+# Temp
+.tmp/
+*.tmp

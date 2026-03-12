@@ -1,0 +1,13 @@
+[theme]
+base            = "dark"
+backgroundColor         = "#0D1117"
+secondaryBackgroundColor = "#161B22"
+primaryColor    = "#00D4AA"
+textColor       = "#E6EDF3"
+font            = "sans serif"
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false

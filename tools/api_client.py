@@ -21,6 +21,18 @@ def _current_season_year():
     now = datetime.now()
     return now.year if 4 <= now.month <= 10 else now.year - 1
 
+def _is_regular_season_date(commence_time_str: str) -> bool:
+    """
+    Returns True only if a game's commence_time falls within the MLB regular
+    season window (April 1 – October 15).  Filters out spring training (Feb–Mar)
+    and postseason outliers we don't have models for.
+    """
+    try:
+        dt = datetime.fromisoformat(commence_time_str.replace("Z", "+00:00"))
+        return (dt.month == 4 and dt.day >= 1) or (5 <= dt.month <= 9) or (dt.month == 10 and dt.day <= 15)
+    except Exception:
+        return True  # allow through if we can't parse the date
+
 
 class DataIngestor:
     def fetch_player_props_odds(self):
@@ -39,6 +51,13 @@ class DataIngestor:
 
         if not events:
             return []
+
+        # Filter out spring training unless explicitly overridden for testing
+        if not os.environ.get("ALLOW_SPRING_TRAINING"):
+            events = [e for e in events if _is_regular_season_date(e.get("commence_time", ""))]
+            if not events:
+                print("No regular-season events found (spring training or off-season games filtered out).")
+                return []
 
         all_odds = []
         # Step 2: Fetch Player Props for each event

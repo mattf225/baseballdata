@@ -28,6 +28,22 @@ class DatabaseClient:
         except Exception as e:
             raise Exception(f"Failed to log alert to Supabase: {e}")
 
+    def log_odds_batch(self, rows: list) -> None:
+        """
+        Bulk-inserts a batch of live odds snapshots into mlb_odds_log.
+        Each row dict must have: event_id, game_date, player_name, market,
+        sportsbook, odds_american, implied_prob, fetched_at.
+        Silently skips on error so odds archiving never blocks the main pipeline.
+        """
+        if not rows:
+            return
+        try:
+            # Insert in chunks of 500 to stay within Supabase request limits
+            for i in range(0, len(rows), 500):
+                self.supabase.table("mlb_odds_log").insert(rows[i:i + 500]).execute()
+        except Exception as e:
+            print(f"Warning: failed to archive odds snapshot: {e}")
+
     def is_spam(self, player_name, market, sportsbook) -> bool:
         """
         Checks if an identical alert (player + market + sportsbook) was sent
