@@ -1,9 +1,21 @@
 import os
 import requests
-import json
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 load_dotenv()
+
+MARKET_DISPLAY = {
+    'batter_home_runs':       'To Hit a Home Run',
+    'batter_hits':            'To Record a Hit',
+    'batter_total_bases_1.5': 'Total Bases Over 1.5',
+    'batter_strikeouts':      'To Strike Out',
+    'pitcher_strikeouts':     'Pitcher Strikeouts Over 4.5',
+    'pitcher_outs':           'Pitcher Outs Over 15.5',
+    'pitcher_hits_allowed':   'Pitcher Hits Allowed Over 4.5',
+    'pitcher_walks_allowed':  'Pitcher Walks Over 1.5',
+}
+
 
 class DiscordNotifier:
     def __init__(self):
@@ -13,25 +25,24 @@ class DiscordNotifier:
 
     def send_mlb_alert(self, player_name, market, sportsbook, odds, implied_prob, true_prob, edge):
         """Builds and sends the analytical Discord Embed for a +EV MLB bet."""
-        
-        # Format the numbers for the display
+
         odds_str = f"+{odds}" if odds > 0 else str(odds)
         implied_str = f"{implied_prob * 100:.1f}%"
         true_str = f"{true_prob * 100:.1f}%"
         edge_str = f"+{edge * 100:.1f}%"
-        
-        # Clean up market name for display
-        market_display = market.replace("_", " ").title()
+
+        market_display = MARKET_DISPLAY.get(market, market.replace("_", " ").title())
 
         payload = {
             "embeds": [
                 {
-                    "title": "🚨 MLB +EV Alert Identified",
-                    "color": 3447003, # Blue
+                    "title": "MLB +EV Alert Identified",
+                    "color": 3447003,  # Blue
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                     "fields": [
                         {
                             "name": "Player & Market",
-                            "value": f"{player_name} - {market_display}",
+                            "value": f"{player_name} — {market_display}",
                             "inline": False
                         },
                         {
@@ -58,14 +69,10 @@ class DiscordNotifier:
         }
 
         try:
-            response = requests.post(
-                self.webhook_url, 
-                data=json.dumps(payload), 
-                headers={"Content-Type": "application/json"}
-            )
+            response = requests.post(self.webhook_url, json=payload, timeout=10)
             response.raise_for_status()
-            print(f"📡 Successfully fired Discord Alert for {player_name}")
+            print(f"Successfully fired Discord Alert for {player_name}")
             return True
         except Exception as e:
-            print(f"❌ Failed to send Discord Webhook: {e}")
+            print(f"Failed to send Discord Webhook: {e}")
             return False

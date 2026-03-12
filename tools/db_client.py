@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timezone, timedelta
 from supabase import create_client, Client
 from dotenv import load_dotenv
 
@@ -7,9 +8,10 @@ load_dotenv()
 class DatabaseClient:
     def __init__(self):
         url = os.environ.get("SUPABASE_URL")
-        key = os.environ.get("SUPABASE_ANON_KEY")
+        # Use service role key for write access; anon key is read-only
+        key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
         if not url or not key:
-            raise ValueError("Supabase keys missing in .env")
+            raise ValueError("SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY missing in .env")
         self.supabase: Client = create_client(url, key)
 
     def log_alert(self, player_name, market, sportsbook, odds_formatted, edge):
@@ -22,32 +24,27 @@ class DatabaseClient:
             "calculated_edge_percentage": float(edge)
         }
         try:
-             self.supabase.table("mlb_alert_log").insert(data).execute()
+            self.supabase.table("mlb_alert_log").insert(data).execute()
         except Exception as e:
-             print(f"Error logging to Supabase: {e}")
+            raise Exception(f"Failed to log alert to Supabase: {e}")
 
-    def is_spam(self, player_name, market, sportsbook):
-        """Checks if an alert for this player/market/book was sent in the last 12 hours."""
+    def is_spam(self, player_name, market, sportsbook) -> bool:
+        """
+        Checks if an identical alert (player + market + sportsbook) was sent
+        within the last 12 hours. Uses a server-side time filter for accuracy.
+        """
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=12)).isoformat()
         try:
-            # Note: We rely on PostgreSQL functions for the 12-hour check, 
-            # but via the JS/Python API we can simply query ordered by sent_at and check time.
-            # To emulate SQL NOW() - INTERVAL '12 hours', we fetch the last entry and compute in Python
-            response = self.supabase.table("mlb_alert_log")\
-                        .select("sent_at")\
-                        .eq("player_name", player_name)\
-                        .eq("market", market)\
-                        .eq("sportsbook", sportsbook)\
-                        .order("sent_at", desc=True)\
-                        .limit(1)\
-                        .execute()
-            
-            if response.data:
-                 last_sent_str = response.data[0]['sent_at']
-                 from datetime import datetime, timezone
-                 # Simple parse (assuming format 2024-05-15T12:00:00+00:00)
-                 # A production implementation would use proper parsing
-                 return True # returning True blocks it as spam to be safe if a record exists
-            return False
+            response = (
+                self.supabase.table("mlb_alert_log")
+                .select("sent_at", count="exact")
+                .eq("player_name", player_name)
+                .eq("market", market)
+                .eq("sportsbook", sportsbook)
+                .gte("sent_at", cutoff)
+                .limit(1)
+                .execute()
+            )
+            return bool(response.data)
         except Exception as e:
-            print(f"Error checking spam log: {e}")
-            return False # Fail open if DB read fails
+            raise Exception(f"Failed to check spam log: {e}")
