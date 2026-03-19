@@ -11,9 +11,9 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
 
-# Multi-year default: 2022–2024 gives 3x more positive examples for rare events
-DEFAULT_START = "2022-04-01"
-DEFAULT_END   = "2024-09-30"
+# Multi-year default: 2023–2025 gives 3x more positive examples for rare events
+DEFAULT_START = "2023-04-01"
+DEFAULT_END   = "2025-09-30"
 
 
 # --------------------------------------------------------------------------------
