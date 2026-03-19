@@ -80,8 +80,8 @@ python tools/mock_alert.py
 ## Retraining ML Models (Annual, Pre-Season)
 
 ```bash
-# 1. Build training datasets (default: 2024 full season)
-#    Override dates with args: python model/build_dataset.py 2024-04-01 2024-09-30
+# 1. Build training datasets (default: 2023–2025 seasons)
+#    Override dates with args: python model/build_dataset.py 2023-04-01 2025-09-30
 python model/build_dataset.py
 
 # 2. Train all 8 market models
