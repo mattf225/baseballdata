@@ -18,6 +18,45 @@ EXPECTED_MARKETS = [
     'pitcher_walks_allowed',
 ]
 
+# 2024 MLB league-average batter K% used as fallback when opponent team is unknown
+_LEAGUE_AVG_OPP_K_PCT = 0.224
+
+# Maps Odds API full team names → FanGraphs/pybaseball team abbreviations
+MLB_TEAM_ABBREV = {
+    "Arizona Diamondbacks": "ARI",
+    "Atlanta Braves": "ATL",
+    "Baltimore Orioles": "BAL",
+    "Boston Red Sox": "BOS",
+    "Chicago Cubs": "CHC",
+    "Chicago White Sox": "CWS",
+    "Cincinnati Reds": "CIN",
+    "Cleveland Guardians": "CLE",
+    "Colorado Rockies": "COL",
+    "Detroit Tigers": "DET",
+    "Houston Astros": "HOU",
+    "Kansas City Royals": "KC",
+    "Los Angeles Angels": "LAA",
+    "Los Angeles Dodgers": "LAD",
+    "Miami Marlins": "MIA",
+    "Milwaukee Brewers": "MIL",
+    "Minnesota Twins": "MIN",
+    "New York Mets": "NYM",
+    "New York Yankees": "NYY",
+    "Oakland Athletics": "OAK",
+    "Athletics": "OAK",           # 2025+ Sacramento/Las Vegas rebranding
+    "Las Vegas Athletics": "OAK",
+    "Philadelphia Phillies": "PHI",
+    "Pittsburgh Pirates": "PIT",
+    "San Diego Padres": "SD",
+    "San Francisco Giants": "SF",
+    "Seattle Mariners": "SEA",
+    "St. Louis Cardinals": "STL",
+    "Tampa Bay Rays": "TB",
+    "Texas Rangers": "TEX",
+    "Toronto Blue Jays": "TOR",
+    "Washington Nationals": "WSH",
+}
+
 # Lazy-load models on first use
 _models = None
 
@@ -78,11 +117,76 @@ def _get_rolling_stat(player_name: str, stats_df, stat_col: str) -> float:
         return 0.0
 
 
-def generate_true_prob(market_name, player_name, batter_df, pitcher_df=None):
+def _resolve_opp_team_abbrev(player_name: str, pitcher_df, home_team: str, away_team: str):
+    """
+    Determines the opponent team abbreviation for a pitcher given game home/away teams.
+    Looks up the pitcher's team from season stats, then returns the other team.
+    """
+    if pitcher_df is None or not home_team or not away_team:
+        return None
+
+    norm_name = _normalize_name(player_name)
+    mask = pitcher_df['Name'].apply(lambda n: _normalize_name(str(n)) == norm_name)
+    player_row = pitcher_df[mask]
+
+    if player_row.empty or 'Team' not in player_row.columns:
+        return None
+
+    pitcher_team = str(player_row.iloc[0]['Team'])
+    home_abbrev = MLB_TEAM_ABBREV.get(home_team)
+    away_abbrev = MLB_TEAM_ABBREV.get(away_team)
+
+    if pitcher_team == home_abbrev:
+        return away_abbrev
+    elif pitcher_team == away_abbrev:
+        return home_abbrev
+    return None
+
+
+def _get_opp_k_pct(team_batting_df, opp_team_abbrev: str) -> float:
+    """
+    Returns the opponent team's season batter K% (SO/PA).
+    Falls back to league average if team is unknown or data unavailable.
+    """
+    if team_batting_df is None or not opp_team_abbrev:
+        return _LEAGUE_AVG_OPP_K_PCT
+
+    if 'Team' not in team_batting_df.columns:
+        return _LEAGUE_AVG_OPP_K_PCT
+
+    mask = team_batting_df['Team'] == opp_team_abbrev
+    team_row = team_batting_df[mask]
+
+    if team_row.empty:
+        return _LEAGUE_AVG_OPP_K_PCT
+
+    # FanGraphs K% may be a decimal (0.224) or percentage string ("22.4%")
+    k_pct = team_row.iloc[0].get('K%', None)
+    if k_pct is None or (isinstance(k_pct, float) and pd.isna(k_pct)):
+        # Fall back to computing from raw SO and PA
+        try:
+            so = float(team_row.iloc[0].get('SO', 0))
+            pa = float(team_row.iloc[0].get('PA', 1))
+            return so / pa if pa > 0 else _LEAGUE_AVG_OPP_K_PCT
+        except Exception:
+            return _LEAGUE_AVG_OPP_K_PCT
+
+    if isinstance(k_pct, str):
+        k_pct = float(k_pct.strip('%')) / 100
+
+    k_pct = float(k_pct)
+    return k_pct / 100 if k_pct > 1 else k_pct  # normalize if stored as percentage
+
+
+def generate_true_prob(market_name, player_name, batter_df, pitcher_df=None,
+                       team_batting_df=None, home_team=None, away_team=None):
     """
     Uses calibrated Random Forest ML models to output the true probability
     for a given sportsbook market and player.
     Returns None if the player cannot be found in the stats dataset.
+
+    For pitcher markets, pass team_batting_df + home_team + away_team to enable
+    opponent K% feature (otherwise falls back to league average).
     """
     models = _load_models()
 
@@ -121,21 +225,47 @@ def generate_true_prob(market_name, player_name, batter_df, pitcher_df=None):
             games_played = 1
 
         ip = _get_rolling_stat(player_name, pitcher_df, 'IP') or 0.0
-        # Note: BF is approximated from IP until per-game logs are available
-        mock_bf = (ip * 3.5) / games_played * 5
+
+        # Per-start averages
+        so_per_game  = (_get_rolling_stat(player_name, pitcher_df, 'SO') or 0.0) / games_played
+        bb_per_game  = (_get_rolling_stat(player_name, pitcher_df, 'BB') or 0.0) / games_played
+        h_per_game   = (_get_rolling_stat(player_name, pitcher_df, 'H')  or 0.0) / games_played
+        ip_per_game  = ip / games_played
+        bf_per_game  = ip_per_game * 3.5   # BF approximated from IP
+        outs_per_game = ip_per_game * 3    # IP * 3 = total outs recorded
+
+        # K% = SO per BF (season-average rate proxy)
+        k_pct = so_per_game / bf_per_game if bf_per_game > 0 else 0.0
+
+        # Opponent strikeout tendency
+        opp_team_abbrev = _resolve_opp_team_abbrev(player_name, pitcher_df, home_team, away_team)
+        opp_k_pct = _get_opp_k_pct(team_batting_df, opp_team_abbrev)
 
         live_features = {
-            'rolling_5_BF':   mock_bf,
-            'rolling_5_SO':   _get_rolling_stat(player_name, pitcher_df, 'SO')  / games_played * 5,
-            'rolling_5_BBA':  _get_rolling_stat(player_name, pitcher_df, 'BB')  / games_played * 5,
-            'rolling_5_HA':   _get_rolling_stat(player_name, pitcher_df, 'H')   / games_played * 5,
-            'rolling_5_Outs': (ip * 3) / games_played * 5,  # IP * 3 = Total Outs
+            # Volume
+            'rolling_5_BF':    bf_per_game * 5,
+            # Strikeout count — multi-window (all same season-rate approximation)
+            'rolling_3_SO':    so_per_game * 3,
+            'rolling_5_SO':    so_per_game * 5,
+            'rolling_10_SO':   so_per_game * 10,
+            # Strikeout rate
+            'rolling_3_K_pct': k_pct,
+            'rolling_5_K_pct': k_pct,
+            'rolling_10_K_pct': k_pct,
+            # Other outcomes
+            'rolling_5_BBA':   bb_per_game * 5,
+            'rolling_5_HA':    h_per_game * 5,
+            'rolling_5_Outs':  outs_per_game * 5,
+            # Opponent quality
+            'opp_k_pct':       opp_k_pct,
         }
 
     else:
         return None
 
-    X_live = pd.DataFrame([live_features])
+    # Build feature vector using only the columns the model was trained on
+    model_features = clf.feature_names_in_ if hasattr(clf, 'feature_names_in_') else list(live_features.keys())
+    X_live = pd.DataFrame([{f: live_features.get(f, 0.0) for f in model_features}])
     true_prob = clf.predict_proba(X_live)[0][1]
     return float(true_prob)
 

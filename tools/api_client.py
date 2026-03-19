@@ -72,7 +72,7 @@ class DataIngestor:
                     f"https://api.the-odds-api.com/v4/sports/baseball_mlb/events/{event_id}/odds",
                     params={
                         "apiKey": ODDS_API_KEY,
-                        "regions": "us",
+                        "regions": "us,us2",
                         "markets": markets_str,
                         "oddsFormat": "american"
                     },
@@ -112,4 +112,15 @@ class DataIngestor:
             return pybaseball.pitching_stats(year)
         except Exception as e:
             print(f"Error fetching pybaseball pitching stats: {e}")
+            return None
+
+    def fetch_team_batting_stats(self, year=None):
+        """Fetches team batting stats used to compute opponent K% for pitcher inference."""
+        if year is None:
+            year = _current_season_year()
+
+        try:
+            return pybaseball.team_batting(year)
+        except Exception as e:
+            print(f"Error fetching team batting stats: {e}")
             return None

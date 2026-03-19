@@ -75,6 +75,11 @@ def main():
     logger.info("Fetching global pitcher stats from Statcast...")
     pitcher_stats_df = ingestor.fetch_pitcher_stats()
 
+    logger.info("Fetching team batting stats for opponent K% calculation...")
+    team_batting_df = ingestor.fetch_team_batting_stats()
+    if team_batting_df is None:
+        logger.warning("Could not fetch team batting stats — opponent K% will fall back to league average.")
+
     if batter_stats_df is None:
         logger.error("Failed to fetch batter stats. Exiting pipeline.")
         return
@@ -150,7 +155,12 @@ def main():
                     if ml_market not in supported_markets:
                         continue
 
-                    true_prob = ev_calculator.generate_true_prob(ml_market, player_name, batter_stats_df, pitcher_stats_df)
+                    true_prob = ev_calculator.generate_true_prob(
+                        ml_market, player_name, batter_stats_df, pitcher_stats_df,
+                        team_batting_df=team_batting_df,
+                        home_team=event.get('home_team'),
+                        away_team=event.get('away_team'),
+                    )
 
                     # Skip if model couldn't find the player
                     if true_prob is None:

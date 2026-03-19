@@ -36,8 +36,10 @@ def train_market_model(df, feature_cols, target_col, market_name, data_source: s
     )
 
     # class_weight='balanced' corrects for rare positive events
+    # min_samples_leaf=10 prevents tiny leaf nodes and reduces overfit on larger feature sets
     clf = RandomForestClassifier(
-        n_estimators=100, max_depth=3, random_state=42, class_weight='balanced'
+        n_estimators=300, max_depth=5, min_samples_leaf=10,
+        random_state=42, class_weight='balanced'
     )
 
     # cv=5 provides more reliable calibration vs cv=3, especially on smaller datasets
@@ -109,9 +111,20 @@ def main():
     if os.path.exists(pitcher_csv):
         df_pitcher = pd.read_csv(pitcher_csv)
         pitcher_features = [
-            'rolling_5_BF', 'rolling_5_SO', 'rolling_5_BBA',
-            'rolling_5_HA', 'rolling_5_Outs'
+            # Volume proxy
+            'rolling_5_BF',
+            # Strikeout count — multi-window captures hot/cold streaks
+            'rolling_3_SO', 'rolling_5_SO', 'rolling_10_SO',
+            # Strikeout rate (SO/BF) — multi-window, normalized for workload
+            'rolling_3_K_pct', 'rolling_5_K_pct', 'rolling_10_K_pct',
+            # Other outcome stats
+            'rolling_5_BBA', 'rolling_5_HA', 'rolling_5_Outs',
+            # Opponent lineup strikeout tendency
+            'opp_k_pct',
         ]
+        # Drop opp_k_pct from features if it wasn't built (older dataset without team columns)
+        if 'opp_k_pct' not in df_pitcher.columns:
+            pitcher_features = [f for f in pitcher_features if f != 'opp_k_pct']
         pitcher_targets = {
             'pitcher_strikeouts':    'Target_SO_Over_4_5',
             'pitcher_outs':          'Target_Outs_Over_15_5',
