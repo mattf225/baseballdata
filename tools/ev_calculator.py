@@ -21,6 +21,9 @@ EXPECTED_MARKETS = [
 # 2024 MLB league-average batter K% used as fallback when opponent team is unknown
 _LEAGUE_AVG_OPP_K_PCT = 0.224
 
+# Minimum DB starts required before switching from season-aggregate to DB-backed features
+MIN_STARTS_FOR_DB_FEATURES = 3
+
 # Maps Odds API full team names → FanGraphs/pybaseball team abbreviations
 MLB_TEAM_ABBREV = {
     "Arizona Diamondbacks": "ARI",
@@ -178,8 +181,54 @@ def _get_opp_k_pct(team_batting_df, opp_team_abbrev: str) -> float:
     return k_pct / 100 if k_pct > 1 else k_pct  # normalize if stored as percentage
 
 
+def _windowed_mean(values: list, window: int) -> float:
+    """Returns the mean of the last `window` values, or mean of all if fewer exist."""
+    if not values:
+        return 0.0
+    subset = values[-window:]
+    return sum(subset) / len(subset)
+
+
+def _features_from_gamelogs(recent_df: pd.DataFrame) -> dict:
+    """
+    Converts a DataFrame of recent pitcher starts (from pitcher_gamelogs) into
+    the 11-feature dict expected by pitcher ML models.
+    Rows should be sorted descending by game_date (most recent first).
+    opp_k_pct in the returned dict is a placeholder — callers must override it
+    with today's live opponent K% via _get_opp_k_pct().
+    """
+    # Sort ascending for rolling windows (oldest → newest)
+    df = recent_df.sort_values('game_date').reset_index(drop=True)
+
+    bf_vals   = df['BF'].tolist()
+    so_vals   = df['SO'].tolist()
+    bba_vals  = df['BBA'].tolist()
+    ha_vals   = df['HA'].tolist()
+    outs_vals = df['Outs'].tolist()
+    kpct_vals = df['K_pct'].fillna(0.0).tolist()
+
+    # opp_k_pct: use stored value as a fallback; overridden by live value in generate_true_prob
+    stored_opp_k = df['opp_k_pct'].dropna()
+    opp_k_pct_fallback = float(stored_opp_k.iloc[-1]) if not stored_opp_k.empty else _LEAGUE_AVG_OPP_K_PCT
+
+    return {
+        'rolling_5_BF':     _windowed_mean(bf_vals,   5),
+        'rolling_3_SO':     _windowed_mean(so_vals,   3),
+        'rolling_5_SO':     _windowed_mean(so_vals,   5),
+        'rolling_10_SO':    _windowed_mean(so_vals,  10),
+        'rolling_3_K_pct':  _windowed_mean(kpct_vals, 3),
+        'rolling_5_K_pct':  _windowed_mean(kpct_vals, 5),
+        'rolling_10_K_pct': _windowed_mean(kpct_vals,10),
+        'rolling_5_BBA':    _windowed_mean(bba_vals,  5),
+        'rolling_5_HA':     _windowed_mean(ha_vals,   5),
+        'rolling_5_Outs':   _windowed_mean(outs_vals, 5),
+        'opp_k_pct':        opp_k_pct_fallback,
+    }
+
+
 def generate_true_prob(market_name, player_name, batter_df, pitcher_df=None,
-                       team_batting_df=None, home_team=None, away_team=None):
+                       team_batting_df=None, home_team=None, away_team=None,
+                       pitcher_gamelogs_cache=None):
     """
     Uses calibrated Random Forest ML models to output the true probability
     for a given sportsbook market and player.
@@ -187,6 +236,8 @@ def generate_true_prob(market_name, player_name, batter_df, pitcher_df=None,
 
     For pitcher markets, pass team_batting_df + home_team + away_team to enable
     opponent K% feature (otherwise falls back to league average).
+    Pass pitcher_gamelogs_cache (dict keyed by normalized name → DataFrame of recent starts)
+    to use true DB-backed rolling features instead of season-aggregate approximations.
     """
     models = _load_models()
 
@@ -218,47 +269,52 @@ def generate_true_prob(market_name, player_name, batter_df, pitcher_df=None,
     # PITCHER PIPELINE INFERENCE
     # ---------------------------------------------------------
     elif market_name.startswith('pitcher'):
-        games_played = _get_rolling_stat(player_name, pitcher_df, 'G')
-        if games_played is None:
-            return None  # Player not found
-        if games_played == 0:
-            games_played = 1
-
-        ip = _get_rolling_stat(player_name, pitcher_df, 'IP') or 0.0
-
-        # Per-start averages
-        so_per_game  = (_get_rolling_stat(player_name, pitcher_df, 'SO') or 0.0) / games_played
-        bb_per_game  = (_get_rolling_stat(player_name, pitcher_df, 'BB') or 0.0) / games_played
-        h_per_game   = (_get_rolling_stat(player_name, pitcher_df, 'H')  or 0.0) / games_played
-        ip_per_game  = ip / games_played
-        bf_per_game  = ip_per_game * 3.5   # BF approximated from IP
-        outs_per_game = ip_per_game * 3    # IP * 3 = total outs recorded
-
-        # K% = SO per BF (season-average rate proxy)
-        k_pct = so_per_game / bf_per_game if bf_per_game > 0 else 0.0
-
-        # Opponent strikeout tendency
+        # Always resolve today's live opponent K% for both branches
         opp_team_abbrev = _resolve_opp_team_abbrev(player_name, pitcher_df, home_team, away_team)
-        opp_k_pct = _get_opp_k_pct(team_batting_df, opp_team_abbrev)
+        live_opp_k_pct = _get_opp_k_pct(team_batting_df, opp_team_abbrev)
 
-        live_features = {
-            # Volume
-            'rolling_5_BF':    bf_per_game * 5,
-            # Strikeout count — multi-window (all same season-rate approximation)
-            'rolling_3_SO':    so_per_game * 3,
-            'rolling_5_SO':    so_per_game * 5,
-            'rolling_10_SO':   so_per_game * 10,
-            # Strikeout rate
-            'rolling_3_K_pct': k_pct,
-            'rolling_5_K_pct': k_pct,
-            'rolling_10_K_pct': k_pct,
-            # Other outcomes
-            'rolling_5_BBA':   bb_per_game * 5,
-            'rolling_5_HA':    h_per_game * 5,
-            'rolling_5_Outs':  outs_per_game * 5,
-            # Opponent quality
-            'opp_k_pct':       opp_k_pct,
-        }
+        # Try DB-backed rolling features first
+        norm_name = _normalize_name(player_name)
+        recent_df = None
+        if pitcher_gamelogs_cache is not None:
+            recent_df = pitcher_gamelogs_cache.get(norm_name)
+
+        if recent_df is not None and len(recent_df) >= MIN_STARTS_FOR_DB_FEATURES:
+            live_features = _features_from_gamelogs(recent_df)
+            # Always override with today's live opponent K%
+            live_features['opp_k_pct'] = live_opp_k_pct
+        else:
+            # Fallback: season-aggregate approximation
+            games_played = _get_rolling_stat(player_name, pitcher_df, 'G')
+            if games_played is None:
+                return None  # Player not found
+            if games_played == 0:
+                games_played = 1
+
+            ip = _get_rolling_stat(player_name, pitcher_df, 'IP') or 0.0
+
+            so_per_game   = (_get_rolling_stat(player_name, pitcher_df, 'SO') or 0.0) / games_played
+            bb_per_game   = (_get_rolling_stat(player_name, pitcher_df, 'BB') or 0.0) / games_played
+            h_per_game    = (_get_rolling_stat(player_name, pitcher_df, 'H')  or 0.0) / games_played
+            ip_per_game   = ip / games_played
+            bf_per_game   = ip_per_game * 3.5   # BF approximated from IP
+            outs_per_game = ip_per_game * 3      # IP * 3 = total outs recorded
+
+            k_pct = so_per_game / bf_per_game if bf_per_game > 0 else 0.0
+
+            live_features = {
+                'rolling_5_BF':     bf_per_game * 5,
+                'rolling_3_SO':     so_per_game * 3,
+                'rolling_5_SO':     so_per_game * 5,
+                'rolling_10_SO':    so_per_game * 10,
+                'rolling_3_K_pct':  k_pct,
+                'rolling_5_K_pct':  k_pct,
+                'rolling_10_K_pct': k_pct,
+                'rolling_5_BBA':    bb_per_game * 5,
+                'rolling_5_HA':     h_per_game * 5,
+                'rolling_5_Outs':   outs_per_game * 5,
+                'opp_k_pct':        live_opp_k_pct,
+            }
 
     else:
         return None

@@ -9,6 +9,7 @@ from api_client import DataIngestor
 import ev_calculator
 from db_client import DatabaseClient
 from notifier import DiscordNotifier
+from gamelog_updater import run_gamelog_update
 
 # Configure structured logging
 log_dir = os.path.join(os.path.dirname(__file__), "logs")
@@ -61,6 +62,11 @@ def main():
     db = DatabaseClient()
     notifier = DiscordNotifier()
 
+    # Step 0: Store yesterday's pitcher gamelogs before today's inference
+    logger.info("Updating pitcher gamelogs from yesterday's results...")
+    gamelog_count = run_gamelog_update()
+    logger.info(f"Pitcher gamelog update complete: {gamelog_count} rows upserted.")
+
     # Step 1: Fetch live odds first — short-circuit if no events today
     logger.info("Fetching live odds from The Odds API...")
     events = ingestor.fetch_player_props_odds()
@@ -86,6 +92,25 @@ def main():
     if pitcher_stats_df is None:
         logger.error("Failed to fetch pitcher stats. Exiting pipeline.")
         return
+
+    # Bulk-fetch pitcher gamelogs for all pitchers with odds today
+    pitcher_names_in_odds = set()
+    for event in events:
+        for bookmaker in event.get('bookmakers', []):
+            for market in bookmaker['markets']:
+                if market['key'].startswith('pitcher'):
+                    for outcome in market['outcomes']:
+                        pitcher_names_in_odds.add(outcome['name'])
+
+    pitcher_gamelogs_cache = {}
+    if pitcher_names_in_odds:
+        logger.info(f"Fetching pitcher gamelogs for {len(pitcher_names_in_odds)} pitchers...")
+        for pname in pitcher_names_in_odds:
+            norm = ev_calculator._normalize_name(pname)
+            df = db.get_pitcher_recent_starts(norm, n=10)
+            if not df.empty:
+                pitcher_gamelogs_cache[norm] = df
+        logger.info(f"Pitcher gamelog cache loaded: {len(pitcher_gamelogs_cache)} pitchers with DB history.")
 
     # Step 3: Archive all odds to mlb_odds_log before processing
     fetched_at = datetime.now(timezone.utc).isoformat()
@@ -160,6 +185,7 @@ def main():
                         team_batting_df=team_batting_df,
                         home_team=event.get('home_team'),
                         away_team=event.get('away_team'),
+                        pitcher_gamelogs_cache=pitcher_gamelogs_cache,
                     )
 
                     # Skip if model couldn't find the player

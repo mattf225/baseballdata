@@ -1,5 +1,6 @@
 import os
 from datetime import datetime, timezone, timedelta
+import pandas as pd
 from supabase import create_client, Client
 from dotenv import load_dotenv
 
@@ -43,6 +44,44 @@ class DatabaseClient:
                 self.supabase.table("mlb_odds_log").insert(rows[i:i + 500]).execute()
         except Exception as e:
             print(f"Warning: failed to archive odds snapshot: {e}")
+
+    def upsert_pitcher_gamelogs(self, rows: list) -> None:
+        """
+        Bulk-upserts pitcher gamelogs into pitcher_gamelogs table.
+        Inserts in chunks of 500. On conflict (pitcher_name, game_date), updates.
+        Silently skips on error so gamelog archiving never blocks the main pipeline.
+        """
+        if not rows:
+            return
+        try:
+            for i in range(0, len(rows), 500):
+                self.supabase.table("pitcher_gamelogs").upsert(
+                    rows[i:i + 500], on_conflict="pitcher_name,game_date"
+                ).execute()
+        except Exception as e:
+            print(f"Warning: failed to upsert pitcher gamelogs: {e}")
+
+    def get_pitcher_recent_starts(self, pitcher_name: str, n: int = 10) -> pd.DataFrame:
+        """
+        Returns the last n starts for a pitcher as a DataFrame.
+        Columns: game_date, BF, SO, BBA, HA, Outs, K_pct, opp_k_pct
+        Returns empty DataFrame on error or if pitcher not found (never None).
+        """
+        try:
+            response = (
+                self.supabase.table("pitcher_gamelogs")
+                .select("game_date, BF, SO, BBA, HA, Outs, K_pct, opp_k_pct")
+                .eq("pitcher_name", pitcher_name)
+                .order("game_date", desc=True)
+                .limit(n)
+                .execute()
+            )
+            if response.data:
+                return pd.DataFrame(response.data)
+            return pd.DataFrame()
+        except Exception as e:
+            print(f"Warning: failed to fetch pitcher gamelogs for {pitcher_name}: {e}")
+            return pd.DataFrame()
 
     def is_spam(self, player_name, market, sportsbook) -> bool:
         """
