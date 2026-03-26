@@ -331,10 +331,29 @@ def load_line_movements(sportsbook: str = "All", market: str = "All", player: st
 def load_todays_schedule() -> list:
     """Fetches today's MLB schedule with probable pitchers via MLB Stats API."""
     try:
-        from mlb_schedule import get_todays_games
+        from tools.mlb_schedule import get_todays_games
         return get_todays_games()
     except Exception:
         return []
+
+
+def _find_todays_opponent(pitcher_name_raw: str) -> str:
+    """Given a pitcher name (either 'last, first' or 'first last'), return today's opponent abbreviation."""
+    name = pitcher_name_raw.strip()
+    if not name:
+        return ""
+    if "," in name:
+        p = name.split(",", 1)
+        name = f"{p[1].strip()} {p[0].strip()}"
+    games = load_todays_schedule()
+    for g in games:
+        hp = (g.get("home_pitcher") or "").lower()
+        ap = (g.get("away_pitcher") or "").lower()
+        if name.lower() == hp:
+            return g.get("away_abbrev", "")
+        elif name.lower() == ap:
+            return g.get("home_abbrev", "")
+    return ""
 
 
 @st.cache_data(ttl=300)
@@ -1378,26 +1397,6 @@ with tab_insights:
         "OAK", "PHI", "PIT", "SD", "SEA", "SF", "STL", "TB", "TEX", "TOR", "WSH",
     ]
 
-    def _on_pitcher_change():
-        """Callback: auto-set opponent when pitcher selection changes."""
-        selected = st.session_state.get("insight_player", "")
-        if not selected.strip():
-            return
-        name = selected.strip()
-        if "," in name:
-            p = name.split(",", 1)
-            name = f"{p[1].strip()} {p[0].strip()}"
-        games = load_todays_schedule()
-        for g in games:
-            hp = (g.get("home_pitcher") or "").lower()
-            ap = (g.get("away_pitcher") or "").lower()
-            if name.lower() == hp:
-                st.session_state["insight_opp"] = g.get("away_abbrev", "")
-                return
-            elif name.lower() == ap:
-                st.session_state["insight_opp"] = g.get("home_abbrev", "")
-                return
-
     col_pi1, col_pi2 = st.columns([2, 2])
     with col_pi1:
         pitcher_names = [""] + load_pitcher_names()
@@ -1406,28 +1405,18 @@ with tab_insights:
             options=pitcher_names,
             key="insight_player",
             format_func=lambda x: "Type to search..." if x == "" else x,
-            on_change=_on_pitcher_change,
         )
 
-    # Resolve today's opponent for label display
-    todays_opp = ""
-    if insight_player.strip():
-        pi_name = insight_player.strip()
-        if "," in pi_name:
-            _parts = pi_name.split(",", 1)
-            pi_display = f"{_parts[1].strip()} {_parts[0].strip()}"
-        else:
-            pi_display = pi_name
-        games = load_todays_schedule()
-        for g in games:
-            hp = (g.get("home_pitcher") or "").lower()
-            ap = (g.get("away_pitcher") or "").lower()
-            if pi_display.lower() == hp:
-                todays_opp = g.get("away_abbrev", "")
-                break
-            elif pi_display.lower() == ap:
-                todays_opp = g.get("home_abbrev", "")
-                break
+    # Auto-detect today's opponent via MLB Stats API
+    todays_opp = _find_todays_opponent(insight_player) if insight_player.strip() else ""
+
+    # If pitcher changed and we found an opponent, sync the dropdown and rerun
+    if todays_opp and st.session_state.get("_prev_pitcher") != insight_player:
+        st.session_state["_prev_pitcher"] = insight_player
+        st.session_state["insight_opp"] = todays_opp
+        st.rerun()
+    elif not insight_player.strip():
+        st.session_state["_prev_pitcher"] = ""
 
     with col_pi2:
         insight_opp = st.selectbox(
