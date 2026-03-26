@@ -1378,6 +1378,26 @@ with tab_insights:
         "OAK", "PHI", "PIT", "SD", "SEA", "SF", "STL", "TB", "TEX", "TOR", "WSH",
     ]
 
+    def _on_pitcher_change():
+        """Callback: auto-set opponent when pitcher selection changes."""
+        selected = st.session_state.get("insight_player", "")
+        if not selected.strip():
+            return
+        name = selected.strip()
+        if "," in name:
+            p = name.split(",", 1)
+            name = f"{p[1].strip()} {p[0].strip()}"
+        games = load_todays_schedule()
+        for g in games:
+            hp = (g.get("home_pitcher") or "").lower()
+            ap = (g.get("away_pitcher") or "").lower()
+            if name.lower() == hp:
+                st.session_state["insight_opp"] = g.get("away_abbrev", "")
+                return
+            elif name.lower() == ap:
+                st.session_state["insight_opp"] = g.get("home_abbrev", "")
+                return
+
     col_pi1, col_pi2 = st.columns([2, 2])
     with col_pi1:
         pitcher_names = [""] + load_pitcher_names()
@@ -1386,19 +1406,18 @@ with tab_insights:
             options=pitcher_names,
             key="insight_player",
             format_func=lambda x: "Type to search..." if x == "" else x,
+            on_change=_on_pitcher_change,
         )
 
-    # Auto-detect today's opponent via MLB Stats API schedule
+    # Resolve today's opponent for label display
     todays_opp = ""
     if insight_player.strip():
         pi_name = insight_player.strip()
-        # Convert "last, first" → "first last" for matching
         if "," in pi_name:
             _parts = pi_name.split(",", 1)
             pi_display = f"{_parts[1].strip()} {_parts[0].strip()}"
         else:
             pi_display = pi_name
-
         games = load_todays_schedule()
         for g in games:
             hp = (g.get("home_pitcher") or "").lower()
@@ -1409,13 +1428,6 @@ with tab_insights:
             elif pi_display.lower() == ap:
                 todays_opp = g.get("home_abbrev", "")
                 break
-
-    # Auto-set opponent in session state when pitcher changes
-    if todays_opp and st.session_state.get("_last_insight_player") != insight_player:
-        st.session_state["insight_opp"] = todays_opp
-        st.session_state["_last_insight_player"] = insight_player
-    elif not insight_player.strip():
-        st.session_state["_last_insight_player"] = ""
 
     with col_pi2:
         insight_opp = st.selectbox(
