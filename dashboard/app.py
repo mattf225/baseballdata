@@ -47,6 +47,10 @@ MUTED   = "#8B949E"
 
 PLOTLY_TEMPLATE = "plotly_dark"
 
+st.markdown("""<style>
+    .stTabs [data-baseweb="tab-panel"] { padding-bottom: 8rem; }
+</style>""", unsafe_allow_html=True)
+
 MARKET_LABELS = {
     # Game lines
     "h2h":                    "Moneyline",
@@ -326,7 +330,14 @@ def load_pitcher_gamelogs(player_name: str = "") -> pd.DataFrame:
             .order("game_date", desc=True)
         )
         if player_name.strip():
-            q = q.ilike("pitcher_name", f"%{player_name.strip().lower()}%")
+            name = player_name.strip().lower()
+            parts = name.split()
+            if len(parts) == 2:
+                # Support both "first last" and "last, first" formats
+                flipped = f"{parts[1]}, {parts[0]}"
+                q = q.or_(f"pitcher_name.ilike.%{name}%,pitcher_name.ilike.%{flipped}%")
+            else:
+                q = q.ilike("pitcher_name", f"%{name}%")
         q = q.limit(50)
         response = q.execute()
         if not response.data:
@@ -1186,6 +1197,23 @@ with tab_odds:
             display_odds["Line"] = display_odds["point"].apply(
                 lambda x: str(x) if pd.notna(x) else "—"
             )
+        # Build matchup column: show opposing pitcher if available, else team matchup
+        has_opp = "opposing_pitcher" in df_odds.columns
+        has_teams = "home_team" in df_odds.columns and "away_team" in df_odds.columns
+        has_matchup = has_opp or has_teams
+        if has_matchup:
+            def _build_matchup(row):
+                opp = row.get("opposing_pitcher")
+                if pd.notna(opp) and opp and opp != "TBD":
+                    return f"vs {opp}"
+                home = row.get("home_team")
+                away = row.get("away_team")
+                if pd.notna(home) and pd.notna(away):
+                    return f"{away} @ {home}"
+                return "—"
+
+            display_odds["Matchup"] = df_odds.apply(_build_matchup, axis=1)
+
         display_odds["Type"] = display_odds["market"].apply(
             lambda m: "Game Line" if m in GAME_LINE_KEYS else "Player Prop"
         )
@@ -1218,6 +1246,8 @@ with tab_odds:
         final_cols = ["Team / Player", "Market"]
         if has_point:
             final_cols += ["Line"]
+        if has_matchup:
+            final_cols += ["Matchup"]
         final_cols += ["Type", "Book", "Odds", "Implied Prob"]
         if has_model:
             final_cols += ["Model Prob", "Edge"]

@@ -12,6 +12,7 @@ from notifier import DiscordNotifier
 from gamelog_updater import run_gamelog_update
 from bovada_client import fetch_bovada_props
 from kalshi_client import fetch_kalshi_props
+from mlb_schedule import get_todays_games, build_matchup_map
 
 # Configure structured logging
 log_dir = os.path.join(os.path.dirname(__file__), "logs")
@@ -80,6 +81,16 @@ def main():
     if not events:
         logger.info("No events found. Exiting pipeline.")
         return
+
+    # Step 1.5: Fetch MLB schedule for opposing pitcher matchups
+    logger.info("Fetching MLB schedule for player matchup data...")
+    mlb_games = get_todays_games()
+    matchup_map = {}
+    if mlb_games:
+        matchup_map = build_matchup_map(mlb_games)
+        logger.info(f"Matchup map built: {len(matchup_map)} players mapped to opposing pitchers.")
+    else:
+        logger.warning("No MLB games found today — matchup data unavailable.")
 
     # Step 2: Fetch stats only after confirming there are events to process
     logger.info("Fetching global batter stats from Statcast...")
@@ -157,6 +168,9 @@ def main():
                                 model_prob = round(tp, 6)
                                 edge = round(tp - implied, 6)
 
+                        # Look up opposing pitcher from matchup map
+                        opp_pitcher = matchup_map.get(outcome['name'].lower())
+
                         odds_archive.append({
                             "event_id":      event['id'],
                             "game_date":     game_date,
@@ -171,6 +185,7 @@ def main():
                             "implied_prob":  implied,
                             "model_prob":    model_prob,
                             "edge":          edge,
+                            "opposing_pitcher": opp_pitcher,
                             "fetched_at":    fetched_at,
                         })
     # Fetch previous snapshot BEFORE writing new one (to detect movements)

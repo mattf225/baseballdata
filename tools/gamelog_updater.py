@@ -212,7 +212,29 @@ def run_gamelog_update(game_date: str = None) -> int:
         return 0
 
 
+def backfill_range(start_date: str, end_date: str) -> int:
+    """
+    Backfills pitcher gamelogs for every date in [start_date, end_date].
+    Usage: python tools/gamelog_updater.py 2024-04-01 2024-09-29
+    """
+    from datetime import datetime
+    start = datetime.strptime(start_date, "%Y-%m-%d").date()
+    end = datetime.strptime(end_date, "%Y-%m-%d").date()
+    total = 0
+    current = start
+    while current <= end:
+        count = run_gamelog_update(current.isoformat())
+        total += count
+        current += timedelta(days=1)
+    return total
+
+
 if __name__ == "__main__":
-    target_date = sys.argv[1] if len(sys.argv) > 1 else None
-    count = run_gamelog_update(target_date)
-    print(f"Done. {count} rows upserted.")
+    if len(sys.argv) == 3:
+        # Range backfill: python tools/gamelog_updater.py 2024-04-01 2024-09-29
+        total = backfill_range(sys.argv[1], sys.argv[2])
+        print(f"Done. {total} total rows upserted across date range.")
+    else:
+        target_date = sys.argv[1] if len(sys.argv) > 1 else None
+        count = run_gamelog_update(target_date)
+        print(f"Done. {count} rows upserted.")
