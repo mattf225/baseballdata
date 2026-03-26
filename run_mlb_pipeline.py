@@ -229,8 +229,10 @@ def main():
                         logger.warning(f"Skipping suspicious odds for {player_name}: {odds_american}")
                         continue
 
-                    # Skip heavily juiced Kalshi lines (-185 and beyond) and extreme longshots (+9900)
-                    if book_name == "kalshi" and (odds_american <= -185 or odds_american >= 9900):
+                    # Skip heavily juiced lines (-200 and beyond) and Kalshi extreme longshots (+9900)
+                    if odds_american <= -200:
+                        continue
+                    if book_name == "kalshi" and odds_american >= 9900:
                         continue
 
                     # Calculate Implied Probability
