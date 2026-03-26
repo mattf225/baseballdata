@@ -184,10 +184,18 @@ def main():
 
     print(f"Found {len(alerts)} unresolved alerts.")
 
-    # Group alerts by game date (YYYY-MM-DD extracted from sent_at)
+    # Group alerts by game date.
+    # Alerts sent between midnight–6am UTC belong to the previous calendar day's games
+    # (pipeline runs overnight after games finish). Convert sent_at to ET to get game date.
+    from datetime import timedelta, timezone as tz
+    UTC = tz.utc
+    ET_OFFSET = timedelta(hours=5)  # UTC-5 (EST); close enough for date bucketing
+
     alerts_by_date: dict[str, list] = {}
     for alert in alerts:
-        game_date = alert["sent_at"][:10]
+        sent_utc = pd.to_datetime(alert["sent_at"], utc=True).to_pydatetime()
+        sent_et = sent_utc - ET_OFFSET
+        game_date = sent_et.date().isoformat()
         alerts_by_date.setdefault(game_date, []).append(alert)
 
     total_resolved = 0
