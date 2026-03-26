@@ -441,7 +441,7 @@ with tab_overview:
             st.plotly_chart(fig_pie, use_container_width=True)
 
         st.markdown("#### Recent Alerts (Last 10)")
-        recent = df_raw.head(10)[["player_name", "market_label", "sportsbook", "odds_formatted",
+        recent = df_raw.head(10)[["player_name", "market_display", "sportsbook", "odds_formatted",
                                    "calculated_edge_percentage", "sent_at", "actual_outcome"]].copy()
         recent["edge"]    = recent["calculated_edge_percentage"].apply(lambda x: f"+{x*100:.1f}%")
         recent["outcome"] = recent["actual_outcome"].apply(outcome_badge)
