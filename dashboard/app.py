@@ -529,144 +529,162 @@ with tab_accuracy:
     if df_raw.empty:
         st.info("No alert data yet.")
     else:
-        resolved = df_raw[df_raw["actual_outcome"].notna()].copy()
+        resolved_all = df_raw[df_raw["actual_outcome"].notna()].copy()
 
-        if resolved.empty:
+        if resolved_all.empty:
             st.info("Run `python3 dashboard/backfill_outcomes.py` to populate actual outcomes.")
         else:
-            resolved["hit"] = resolved["actual_outcome"].astype(int)
+            # Filters
+            acc_col1, acc_col2 = st.columns(2)
+            with acc_col1:
+                book_opts = ["All"] + sorted(resolved_all["sportsbook"].dropna().unique().tolist())
+                sel_acc_book = st.selectbox("Sportsbook", book_opts, key="acc_book")
+            with acc_col2:
+                market_opts = ["All"] + sorted(resolved_all["market_label"].dropna().unique().tolist())
+                sel_acc_market = st.selectbox("Market", market_opts, key="acc_market")
 
-            overall_wr  = resolved["hit"].mean() * 100
-            by_market   = resolved.groupby("market_label")["hit"].agg(["mean", "count"]).reset_index()
-            by_market.columns = ["Market", "Win Rate", "Alerts"]
-            by_market["Win Rate %"] = (by_market["Win Rate"] * 100).round(1)
-            best_market = by_market.loc[by_market["Win Rate"].idxmax(), "Market"] if len(by_market) else "—"
+            resolved = resolved_all.copy()
+            if sel_acc_book != "All":
+                resolved = resolved[resolved["sportsbook"] == sel_acc_book]
+            if sel_acc_market != "All":
+                resolved = resolved[resolved["market_label"] == sel_acc_market]
 
-            avg_edge_hits   = resolved[resolved["hit"] == 1]["calculated_edge_percentage"].mean() * 100
-            avg_edge_misses = resolved[resolved["hit"] == 0]["calculated_edge_percentage"].mean() * 100
+            if resolved.empty:
+                st.info("No resolved alerts match the selected filters.")
+            else:
+                resolved["hit"] = resolved["actual_outcome"].astype(int)
 
-            c1, c2, c3, c4 = st.columns(4)
-            with c1: kpi("Overall Win Rate", f"{overall_wr:.1f}%", GREEN if overall_wr >= 50 else RED)
-            with c2: kpi("Best Market", best_market, TEAL)
-            with c3: kpi("Avg Edge (Hits)",   f"+{avg_edge_hits:.1f}%",   GREEN)
-            with c4: kpi("Avg Edge (Misses)", f"+{avg_edge_misses:.1f}%", RED)
+                overall_wr  = resolved["hit"].mean() * 100
+                by_market   = resolved.groupby("market_label")["hit"].agg(["mean", "count"]).reset_index()
+                by_market.columns = ["Market", "Win Rate", "Alerts"]
+                by_market["Win Rate %"] = (by_market["Win Rate"] * 100).round(1)
+                best_market = by_market.loc[by_market["Win Rate"].idxmax(), "Market"] if len(by_market) else "—"
 
-            st.markdown("<hr>", unsafe_allow_html=True)
+                avg_edge_hits   = resolved[resolved["hit"] == 1]["calculated_edge_percentage"].mean() * 100
+                avg_edge_misses = resolved[resolved["hit"] == 0]["calculated_edge_percentage"].mean() * 100
 
-            col_l, col_r = st.columns(2)
+                c1, c2, c3, c4 = st.columns(4)
+                with c1: kpi("Overall Win Rate", f"{overall_wr:.1f}%", GREEN if overall_wr >= 50 else RED)
+                with c2: kpi("Best Market", best_market, TEAL)
+                with c3: kpi("Avg Edge (Hits)",   f"+{avg_edge_hits:.1f}%",   GREEN)
+                with c4: kpi("Avg Edge (Misses)", f"+{avg_edge_misses:.1f}%", RED)
 
-            with col_l:
-                st.markdown("#### Win Rate by Market")
-                by_market_sorted = by_market.sort_values("Win Rate %", ascending=True)
-                colors = [GREEN if wr >= 50 else RED for wr in by_market_sorted["Win Rate %"]]
-                fig_market = go.Figure(go.Bar(
-                    x=by_market_sorted["Win Rate %"],
-                    y=by_market_sorted["Market"],
-                    orientation="h",
-                    marker_color=colors,
-                    text=by_market_sorted.apply(lambda r: f"{r['Win Rate %']}% ({int(r['Alerts'])})", axis=1),
-                    textposition="outside",
-                ))
-                fig_market.add_vline(x=50, line_dash="dot", line_color=MUTED, annotation_text="50%")
-                fig_market.update_layout(
-                    template=PLOTLY_TEMPLATE,
-                    plot_bgcolor=CARD_BG, paper_bgcolor=CARD_BG,
-                    margin=dict(l=0, r=60, t=10, b=0),
-                    xaxis=dict(range=[0, 110], title="Win Rate %"),
-                    yaxis_title="",
-                    height=320,
-                )
-                st.plotly_chart(fig_market, use_container_width=True)
+                st.markdown("<hr>", unsafe_allow_html=True)
 
-            with col_r:
-                st.markdown("#### Win Rate Over Time (Weekly)")
-                resolved["week"] = pd.to_datetime(resolved["game_date"]).dt.to_period("W").dt.start_time
-                weekly = resolved.groupby("week")["hit"].agg(["mean", "count"]).reset_index()
-                weekly.columns = ["Week", "Win Rate", "Alerts"]
-                weekly["Win Rate %"] = (weekly["Win Rate"] * 100).round(1)
+                col_l, col_r = st.columns(2)
 
-                fig_time = go.Figure()
-                fig_time.add_trace(go.Scatter(
-                    x=weekly["Week"], y=weekly["Win Rate %"],
-                    mode="lines+markers",
-                    line=dict(color=TEAL, width=2),
-                    marker=dict(size=6, color=TEAL),
-                    name="Win Rate",
-                    hovertemplate="%{y:.1f}% (%{customdata} alerts)<extra></extra>",
-                    customdata=weekly["Alerts"],
-                ))
-                fig_time.add_hline(y=50, line_dash="dot", line_color=MUTED)
-                fig_time.update_layout(
-                    template=PLOTLY_TEMPLATE,
-                    plot_bgcolor=CARD_BG, paper_bgcolor=CARD_BG,
-                    margin=dict(l=0, r=0, t=10, b=0),
-                    yaxis=dict(range=[0, 105], title="Win Rate %"),
-                    xaxis_title="",
-                    height=320,
-                    showlegend=False,
-                )
-                st.plotly_chart(fig_time, use_container_width=True)
-
-            col_l2, col_r2 = st.columns(2)
-
-            with col_l2:
-                st.markdown("#### Edge Distribution: Hits vs Misses")
-                fig_edge = go.Figure()
-                fig_edge.add_trace(go.Histogram(
-                    x=resolved[resolved["hit"] == 1]["calculated_edge_percentage"] * 100,
-                    name="Hit", marker_color=GREEN, opacity=0.75, nbinsx=20,
-                ))
-                fig_edge.add_trace(go.Histogram(
-                    x=resolved[resolved["hit"] == 0]["calculated_edge_percentage"] * 100,
-                    name="Miss", marker_color=RED, opacity=0.75, nbinsx=20,
-                ))
-                fig_edge.update_layout(
-                    barmode="overlay",
-                    template=PLOTLY_TEMPLATE,
-                    plot_bgcolor=CARD_BG, paper_bgcolor=CARD_BG,
-                    margin=dict(l=0, r=0, t=10, b=0),
-                    xaxis_title="Edge %", yaxis_title="Count",
-                    height=280,
-                    legend=dict(bgcolor=CARD_BG),
-                )
-                st.plotly_chart(fig_edge, use_container_width=True)
-
-            with col_r2:
-                st.markdown("#### Model Calibration")
-                cal_df = resolved.dropna(subset=["model_prob"]).copy()
-                if not cal_df.empty:
-                    cal_df["prob_bucket"] = pd.cut(cal_df["model_prob"], bins=10)
-                    cal = cal_df.groupby("prob_bucket", observed=False).agg(
-                        mean_pred=("model_prob", "mean"),
-                        actual_rate=("hit", "mean"),
-                        count=("hit", "count"),
-                    ).dropna().reset_index()
-
-                    fig_cal = go.Figure()
-                    fig_cal.add_trace(go.Scatter(
-                        x=[0, 1], y=[0, 1],
-                        mode="lines", line=dict(color=MUTED, dash="dot"), name="Perfect"
+                with col_l:
+                    st.markdown("#### Win Rate by Market")
+                    by_market_sorted = by_market.sort_values("Win Rate %", ascending=True)
+                    colors = [GREEN if wr >= 50 else RED for wr in by_market_sorted["Win Rate %"]]
+                    fig_market = go.Figure(go.Bar(
+                        x=by_market_sorted["Win Rate %"],
+                        y=by_market_sorted["Market"],
+                        orientation="h",
+                        marker_color=colors,
+                        text=by_market_sorted.apply(lambda r: f"{r['Win Rate %']}% ({int(r['Alerts'])})", axis=1),
+                        textposition="outside",
                     ))
-                    fig_cal.add_trace(go.Scatter(
-                        x=cal["mean_pred"], y=cal["actual_rate"],
+                    fig_market.add_vline(x=50, line_dash="dot", line_color=MUTED, annotation_text="50%")
+                    fig_market.update_layout(
+                        template=PLOTLY_TEMPLATE,
+                        plot_bgcolor=CARD_BG, paper_bgcolor=CARD_BG,
+                        margin=dict(l=0, r=60, t=10, b=0),
+                        xaxis=dict(range=[0, 110], title="Win Rate %"),
+                        yaxis_title="",
+                        height=320,
+                    )
+                    st.plotly_chart(fig_market, use_container_width=True)
+
+                with col_r:
+                    st.markdown("#### Win Rate Over Time (Weekly)")
+                    resolved["week"] = pd.to_datetime(resolved["game_date"]).dt.to_period("W").dt.start_time
+                    weekly = resolved.groupby("week")["hit"].agg(["mean", "count"]).reset_index()
+                    weekly.columns = ["Week", "Win Rate", "Alerts"]
+                    weekly["Win Rate %"] = (weekly["Win Rate"] * 100).round(1)
+
+                    fig_time = go.Figure()
+                    fig_time.add_trace(go.Scatter(
+                        x=weekly["Week"], y=weekly["Win Rate %"],
                         mode="lines+markers",
-                        marker=dict(size=cal["count"].clip(4, 18), color=TEAL, sizemode="area"),
-                        line=dict(color=TEAL),
-                        name="Model",
-                        hovertemplate="Predicted: %{x:.1%}<br>Actual: %{y:.1%}<extra></extra>",
+                        line=dict(color=TEAL, width=2),
+                        marker=dict(size=6, color=TEAL),
+                        name="Win Rate",
+                        hovertemplate="%{y:.1f}% (%{customdata} alerts)<extra></extra>",
+                        customdata=weekly["Alerts"],
                     ))
-                    fig_cal.update_layout(
+                    fig_time.add_hline(y=50, line_dash="dot", line_color=MUTED)
+                    fig_time.update_layout(
                         template=PLOTLY_TEMPLATE,
                         plot_bgcolor=CARD_BG, paper_bgcolor=CARD_BG,
                         margin=dict(l=0, r=0, t=10, b=0),
-                        xaxis=dict(range=[0, 1], title="Model Probability", tickformat=".0%"),
-                        yaxis=dict(range=[0, 1], title="Actual Hit Rate", tickformat=".0%"),
+                        yaxis=dict(range=[0, 105], title="Win Rate %"),
+                        xaxis_title="",
+                        height=320,
+                        showlegend=False,
+                    )
+                    st.plotly_chart(fig_time, use_container_width=True)
+
+                col_l2, col_r2 = st.columns(2)
+
+                with col_l2:
+                    st.markdown("#### Edge Distribution: Hits vs Misses")
+                    fig_edge = go.Figure()
+                    fig_edge.add_trace(go.Histogram(
+                        x=resolved[resolved["hit"] == 1]["calculated_edge_percentage"] * 100,
+                        name="Hit", marker_color=GREEN, opacity=0.75, nbinsx=20,
+                    ))
+                    fig_edge.add_trace(go.Histogram(
+                        x=resolved[resolved["hit"] == 0]["calculated_edge_percentage"] * 100,
+                        name="Miss", marker_color=RED, opacity=0.75, nbinsx=20,
+                    ))
+                    fig_edge.update_layout(
+                        barmode="overlay",
+                        template=PLOTLY_TEMPLATE,
+                        plot_bgcolor=CARD_BG, paper_bgcolor=CARD_BG,
+                        margin=dict(l=0, r=0, t=10, b=0),
+                        xaxis_title="Edge %", yaxis_title="Count",
                         height=280,
                         legend=dict(bgcolor=CARD_BG),
                     )
-                    st.plotly_chart(fig_cal, use_container_width=True)
-                else:
-                    st.info("Not enough data for calibration chart.")
+                    st.plotly_chart(fig_edge, use_container_width=True)
+
+                with col_r2:
+                    st.markdown("#### Model Calibration")
+                    cal_df = resolved.dropna(subset=["model_prob"]).copy()
+                    if not cal_df.empty:
+                        cal_df["prob_bucket"] = pd.cut(cal_df["model_prob"], bins=10)
+                        cal = cal_df.groupby("prob_bucket", observed=False).agg(
+                            mean_pred=("model_prob", "mean"),
+                            actual_rate=("hit", "mean"),
+                            count=("hit", "count"),
+                        ).dropna().reset_index()
+
+                        fig_cal = go.Figure()
+                        fig_cal.add_trace(go.Scatter(
+                            x=[0, 1], y=[0, 1],
+                            mode="lines", line=dict(color=MUTED, dash="dot"), name="Perfect"
+                        ))
+                        fig_cal.add_trace(go.Scatter(
+                            x=cal["mean_pred"], y=cal["actual_rate"],
+                            mode="lines+markers",
+                            marker=dict(size=cal["count"].clip(4, 18), color=TEAL, sizemode="area"),
+                            line=dict(color=TEAL),
+                            name="Model",
+                            hovertemplate="Predicted: %{x:.1%}<br>Actual: %{y:.1%}<extra></extra>",
+                        ))
+                        fig_cal.update_layout(
+                            template=PLOTLY_TEMPLATE,
+                            plot_bgcolor=CARD_BG, paper_bgcolor=CARD_BG,
+                            margin=dict(l=0, r=0, t=10, b=0),
+                            xaxis=dict(range=[0, 1], title="Model Probability", tickformat=".0%"),
+                            yaxis=dict(range=[0, 1], title="Actual Hit Rate", tickformat=".0%"),
+                            height=280,
+                            legend=dict(bgcolor=CARD_BG),
+                        )
+                        st.plotly_chart(fig_cal, use_container_width=True)
+                    else:
+                        st.info("Not enough data for calibration chart.")
 
 
 # ===========================================================================
