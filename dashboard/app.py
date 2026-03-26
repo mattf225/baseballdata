@@ -1532,8 +1532,6 @@ with tab_insights:
             if insight_opp.strip() and "opp_team" in gl.columns:
                 gl_matchup = gl[gl["opp_team"].str.contains(insight_opp.strip(), case=False, na=False)]
 
-            col_g1, col_g2 = st.columns(2)
-
             def _format_game_table(df_slice):
                 """Format a game log slice for display with pitch stats."""
                 display = df_slice.rename(columns={
@@ -1557,55 +1555,55 @@ with tab_insights:
                 cols = [c for c in ["Date", "Opp", "K", "BB", "HA", "Outs", "Pit", "K%", "Whf", "CSW%", "FPS%", "Brl", "HH%"] if c in display.columns]
                 return display[cols]
 
-            with col_g1:
-                st.markdown("##### Last 5 Games")
-                recent_5 = gl.head(5).copy()
-                if not recent_5.empty:
-                    st.dataframe(_format_game_table(recent_5), use_container_width=True, hide_index=True)
+            # --- Last 5 Games ---
+            st.markdown("##### Last 5 Games")
+            recent_5 = gl.head(5).copy()
+            if not recent_5.empty:
+                st.dataframe(_format_game_table(recent_5), use_container_width=True, hide_index=True)
 
-                    avg_k = recent_5["SO"].mean() if "SO" in recent_5.columns else 0
-                    avg_outs = recent_5["Outs"].mean() if "Outs" in recent_5.columns else 0
-                    avg_ha = recent_5["HA"].mean() if "HA" in recent_5.columns else 0
-                    avg_csw = recent_5["csw_pct"].mean() if "csw_pct" in recent_5.columns and recent_5["csw_pct"].notna().any() else None
-                    summary = (
-                        f'5-game averages: <b style="color:{TEAL}">{avg_k:.1f} K</b> · '
-                        f'<b style="color:{TEAL}">{avg_outs:.1f} Outs</b> · '
-                        f'<b style="color:{TEAL}">{avg_ha:.1f} HA</b>'
-                    )
-                    if avg_csw is not None:
-                        summary += f' · <b style="color:{TEAL}">{avg_csw*100:.1f}% CSW</b>'
-                    st.markdown(f'<p style="color:{MUTED}; font-size:0.82rem;">{summary}</p>', unsafe_allow_html=True)
-                else:
-                    st.info("No recent games found.")
+                avg_k = recent_5["SO"].mean() if "SO" in recent_5.columns else 0
+                avg_outs = recent_5["Outs"].mean() if "Outs" in recent_5.columns else 0
+                avg_ha = recent_5["HA"].mean() if "HA" in recent_5.columns else 0
+                avg_csw = recent_5["csw_pct"].mean() if "csw_pct" in recent_5.columns and recent_5["csw_pct"].notna().any() else None
+                summary = (
+                    f'5-game averages: <b style="color:{TEAL}">{avg_k:.1f} K</b> · '
+                    f'<b style="color:{TEAL}">{avg_outs:.1f} Outs</b> · '
+                    f'<b style="color:{TEAL}">{avg_ha:.1f} HA</b>'
+                )
+                if avg_csw is not None:
+                    summary += f' · <b style="color:{TEAL}">{avg_csw*100:.1f}% CSW</b>'
+                st.markdown(f'<p style="color:{MUTED}; font-size:0.82rem;">{summary}</p>', unsafe_allow_html=True)
+            else:
+                st.info("No recent games found.")
 
-            with col_g2:
-                if insight_opp.strip():
-                    st.markdown(f"##### Matchups vs {insight_opp.strip().upper()}")
-                else:
-                    st.markdown("##### Matchup History")
+            # --- Matchup History ---
+            if insight_opp.strip():
+                st.markdown(f"##### Matchups vs {insight_opp.strip().upper()}")
+            else:
+                st.markdown("##### Matchup History")
+                st.markdown(
+                    f'<p style="color:{MUTED}; font-size:0.82rem;">'
+                    f'Select an opponent above to filter.</p>',
+                    unsafe_allow_html=True,
+                )
+
+            if not gl_matchup.empty:
+                st.dataframe(_format_game_table(gl_matchup.head(5)), use_container_width=True, hide_index=True)
+
+                if insight_opp.strip() and len(gl_matchup) > 0:
+                    avg_k = gl_matchup["SO"].mean() if "SO" in gl_matchup.columns else 0
+                    avg_outs = gl_matchup["Outs"].mean() if "Outs" in gl_matchup.columns else 0
+                    avg_ha = gl_matchup["HA"].mean() if "HA" in gl_matchup.columns else 0
                     st.markdown(
                         f'<p style="color:{MUTED}; font-size:0.82rem;">'
-                        f'Select an opponent above to filter.</p>',
+                        f'vs {insight_opp.strip().upper()} averages ({len(gl_matchup)} starts): '
+                        f'<b style="color:{TEAL}">{avg_k:.1f} K</b> · '
+                        f'<b style="color:{TEAL}">{avg_outs:.1f} Outs</b> · '
+                        f'<b style="color:{TEAL}">{avg_ha:.1f} HA</b></p>',
                         unsafe_allow_html=True,
                     )
-
-                if not gl_matchup.empty:
-                    st.dataframe(_format_game_table(gl_matchup.head(5)), use_container_width=True, hide_index=True)
-
-                    if insight_opp.strip() and len(gl_matchup) > 0:
-                        avg_k = gl_matchup["SO"].mean() if "SO" in gl_matchup.columns else 0
-                        avg_outs = gl_matchup["Outs"].mean() if "Outs" in gl_matchup.columns else 0
-                        avg_ha = gl_matchup["HA"].mean() if "HA" in gl_matchup.columns else 0
-                        st.markdown(
-                            f'<p style="color:{MUTED}; font-size:0.82rem;">'
-                            f'vs {insight_opp.strip().upper()} averages ({len(gl_matchup)} starts): '
-                            f'<b style="color:{TEAL}">{avg_k:.1f} K</b> · '
-                            f'<b style="color:{TEAL}">{avg_outs:.1f} Outs</b> · '
-                            f'<b style="color:{TEAL}">{avg_ha:.1f} HA</b></p>',
-                            unsafe_allow_html=True,
-                        )
-                elif insight_opp.strip():
-                    st.info(f"No matchups found vs '{insight_opp}'.")
+            elif insight_opp.strip():
+                st.info(f"No matchups found vs '{insight_opp}'.")
 
             # --- Current Pitcher Prop Odds ---
             st.markdown("<hr>", unsafe_allow_html=True)
