@@ -459,6 +459,19 @@ def build_per_game_pitch_stats(df: pd.DataFrame) -> pd.DataFrame:
 
     strike_descs = WHIFF_DESCS | CALLED_STRIKE_DESCS | {"foul", "foul_tip", "hit_into_play"}
 
+    # Flag batted ball events for barrel / hard-hit tracking
+    df["is_batted_ball"] = df["description"] == "hit_into_play"
+    df["is_barrel"] = False
+    if "barrel" in df.columns:
+        df["is_barrel"] = df["barrel"].fillna(0).astype(int) == 1
+    elif "launch_speed" in df.columns and "launch_angle" in df.columns:
+        # Barrel approximation: EV >= 98 mph and launch angle 26-30 (Statcast definition core)
+        df["is_barrel"] = (
+            df["launch_speed"].fillna(0).ge(98)
+            & df["launch_angle"].fillna(0).between(26, 30)
+        )
+    df["is_hard_hit"] = df["launch_speed"].fillna(0).ge(95) if "launch_speed" in df.columns else False
+
     per_game = df.groupby("game_date").agg(
         pitches=("pitch_type", "count"),
         whiffs=("description", lambda x: x.isin(WHIFF_DESCS).sum()),
@@ -468,12 +481,16 @@ def build_per_game_pitch_stats(df: pd.DataFrame) -> pd.DataFrame:
         first_pitch_strikes=("is_first_pitch", lambda x: (
             x & df.loc[x.index, "description"].isin(strike_descs)
         ).sum()),
+        batted_balls=("is_batted_ball", "sum"),
+        barrels=("is_barrel", "sum"),
+        hard_hits=("is_hard_hit", "sum"),
     ).reset_index()
 
     per_game["csw_pct"] = (per_game["whiffs"] + per_game["called_strikes"]) / per_game["pitches"]
     per_game["fps_pct"] = per_game["first_pitch_strikes"] / per_game["first_pitches"].replace(0, 1)
+    per_game["hard_hit_pct"] = per_game["hard_hits"] / per_game["batted_balls"].replace(0, 1)
     per_game["game_date"] = pd.to_datetime(per_game["game_date"]).dt.strftime("%Y-%m-%d")
-    per_game = per_game.drop(columns=["called_strikes", "first_pitches", "first_pitch_strikes"])
+    per_game = per_game.drop(columns=["called_strikes", "first_pitches", "first_pitch_strikes", "batted_balls", "hard_hits"])
     return per_game
 
 
@@ -1525,18 +1542,19 @@ with tab_insights:
                     "K_pct": "K%", "opp_team": "Opp",
                     "pitches": "Pit", "whiffs": "Whf", "csw_pct": "CSW%",
                     "walks": "BB", "fps_pct": "FPS%",
+                    "barrels": "Brl", "hard_hit_pct": "HH%",
                 })
-                for pct_col in ["K%", "CSW%", "FPS%"]:
+                for pct_col in ["K%", "CSW%", "FPS%", "HH%"]:
                     if pct_col in display.columns:
                         display[pct_col] = display[pct_col].apply(
                             lambda x: f"{float(x)*100:.1f}%" if pd.notna(x) else "—"
                         )
-                for int_col in ["Whf", "Pit", "BB"]:
+                for int_col in ["Whf", "Pit", "BB", "Brl"]:
                     if int_col in display.columns:
                         display[int_col] = display[int_col].apply(
                             lambda x: int(x) if pd.notna(x) else "—"
                         )
-                cols = [c for c in ["Date", "Opp", "K", "BB", "HA", "Outs", "Pit", "K%", "Whf", "CSW%", "FPS%"] if c in display.columns]
+                cols = [c for c in ["Date", "Opp", "K", "BB", "HA", "Outs", "Pit", "K%", "Whf", "CSW%", "FPS%", "Brl", "HH%"] if c in display.columns]
                 return display[cols]
 
             with col_g1:
