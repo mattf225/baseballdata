@@ -14,6 +14,12 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 
+PST = timezone(timedelta(hours=-8))
+
+def to_pst(dt_series):
+    """Converts a UTC-aware datetime Series to PST and formats as 'Mar 26, 12:00 PST'."""
+    return dt_series.dt.tz_convert(PST).dt.strftime("%b %d, %H:%M PST")
+
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -349,7 +355,7 @@ def load_pitcher_gamelogs(player_name: str = "") -> pd.DataFrame:
 
 df_raw = load_alerts()
 
-last_refresh = datetime.now(timezone.utc).strftime("%b %d %Y, %H:%M UTC")
+last_refresh = datetime.now(PST).strftime("%b %d %Y, %H:%M PST")
 alert_count = len(df_raw) if not df_raw.empty else 0
 _rc1, _rc2 = st.columns([6, 1])
 with _rc1:
@@ -437,7 +443,7 @@ with tab_overview:
                                    "calculated_edge_percentage", "sent_at", "actual_outcome"]].copy()
         recent["edge"]    = recent["calculated_edge_percentage"].apply(lambda x: f"+{x*100:.1f}%")
         recent["outcome"] = recent["actual_outcome"].apply(outcome_badge)
-        recent["sent_at"] = recent["sent_at"].dt.strftime("%b %d, %H:%M")
+        recent["sent_at"] = to_pst(recent["sent_at"])
         recent = recent.drop(columns=["calculated_edge_percentage", "actual_outcome"])
         recent = recent[["player_name", "market_label", "sportsbook", "odds_formatted", "edge", "sent_at", "outcome"]]
         recent.columns    = ["Player", "Market", "Book", "Odds", "Edge", "Sent At", "Outcome"]
@@ -1156,7 +1162,7 @@ with tab_odds:
                 home = teams[1] if len(teams) > 1 else "Home"
 
             commence = grp["commence_time"].dropna().iloc[0] if "commence_time" in grp and grp["commence_time"].notna().any() else None
-            time_str = pd.to_datetime(commence, utc=True).strftime("%-m/%-d/%y %-I:%M %p") if commence else str(gdate)
+            time_str = pd.to_datetime(commence, utc=True).astimezone(PST).strftime("%-m/%-d/%y %-I:%M %p PST") if commence else str(gdate)
 
             h2h  = grp[grp["market"] == "h2h"]
             spr  = grp[grp["market"] == "spreads"]
@@ -1282,7 +1288,7 @@ with tab_odds:
             lambda x: f"{x*100:.1f}%" if pd.notna(x) else "—"
         )
         display_odds["Odds"] = display_odds["odds_american"].apply(_fmt_odds)
-        display_odds["Fetched"] = display_odds["fetched_at"].dt.strftime("%b %d, %H:%M UTC")
+        display_odds["Fetched"] = to_pst(display_odds["fetched_at"])
 
         if has_model:
             display_odds["Model Prob"] = display_odds["model_prob"].apply(
@@ -1487,7 +1493,7 @@ with tab_movements:
         display_mv["Old Prob"]  = display_mv["old_implied_prob"].apply(lambda x: f"{float(x)*100:.1f}%" if pd.notna(x) else "—")
         display_mv["New Prob"]  = display_mv["new_implied_prob"].apply(lambda x: f"{float(x)*100:.1f}%" if pd.notna(x) else "—")
         display_mv["Shift"]     = display_mv["prob_shift"].apply(_fmt_shift)
-        display_mv["Detected"]  = display_mv["detected_at"].dt.strftime("%b %d, %H:%M UTC")
+        display_mv["Detected"]  = to_pst(display_mv["detected_at"])
         display_mv = display_mv.rename(columns={
             "player_name":  "Player",
             "market_label": "Market",
