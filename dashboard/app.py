@@ -472,6 +472,25 @@ def build_per_game_pitch_stats(df: pd.DataFrame) -> pd.DataFrame:
         )
     df["is_hard_hit"] = df["launch_speed"].fillna(0).ge(95) if "launch_speed" in df.columns else False
 
+    # BABIP components: hits (excl HR), balls in play
+    hit_events = {"single", "double", "triple"}
+    hr_events = {"home_run"}
+    bip_events = hit_events | hr_events | {"field_out", "force_out", "grounded_into_dp", "double_play", "field_error", "sac_fly"}
+    sf_events = {"sac_fly"}
+
+    df["is_hit_no_hr"] = df["events"].isin(hit_events)
+    df["is_hr"] = df["events"].isin(hr_events)
+    df["is_bip"] = df["events"].isin(bip_events)
+    df["is_sf"] = df["events"].isin(sf_events)
+    df["is_k"] = df["events"].isin({"strikeout", "strikeout_double_play"})
+
+    # LOB%: need runners on base and runs scored per at-bat
+    # A runner is "on base" if on_1b, on_2b, or on_3b is not null before the pitch
+    df["has_runner"] = False
+    for base_col in ["on_1b", "on_2b", "on_3b"]:
+        if base_col in df.columns:
+            df["has_runner"] = df["has_runner"] | df[base_col].notna()
+
     per_game = df.groupby("game_date").agg(
         pitches=("pitch_type", "count"),
         whiffs=("description", lambda x: x.isin(WHIFF_DESCS).sum()),
@@ -484,13 +503,51 @@ def build_per_game_pitch_stats(df: pd.DataFrame) -> pd.DataFrame:
         batted_balls=("is_batted_ball", "sum"),
         barrels=("is_barrel", "sum"),
         hard_hits=("is_hard_hit", "sum"),
+        hits_no_hr=("is_hit_no_hr", "sum"),
+        hrs=("is_hr", "sum"),
+        bip=("is_bip", "sum"),
+        sfs=("is_sf", "sum"),
+        ks=("is_k", "sum"),
     ).reset_index()
 
     per_game["csw_pct"] = (per_game["whiffs"] + per_game["called_strikes"]) / per_game["pitches"]
     per_game["fps_pct"] = per_game["first_pitch_strikes"] / per_game["first_pitches"].replace(0, 1)
     per_game["hard_hit_pct"] = per_game["hard_hits"] / per_game["batted_balls"].replace(0, 1)
-    per_game["game_date"] = pd.to_datetime(per_game["game_date"]).dt.strftime("%Y-%m-%d")
-    per_game = per_game.drop(columns=["called_strikes", "first_pitches", "first_pitch_strikes", "batted_balls", "hard_hits"])
+
+    # BABIP = (H - HR) / (BIP - HR - K + SF)  — only on balls in play
+    babip_denom = per_game["bip"] - per_game["hrs"] - per_game["ks"] + per_game["sfs"]
+    per_game["babip"] = per_game["hits_no_hr"] / babip_denom.replace(0, float("nan"))
+
+    # LOB% from Statcast: compute per-game from event-level baserunner data
+    # Group events with runners on to compute LOB%
+    events_df = df[df["events"].notna()].copy()
+    lob_rows = []
+    for gd, gdf in events_df.groupby("game_date"):
+        runners_on = gdf["has_runner"].sum()  # at-bats with runners on
+        runs = gdf["post_bat_score"].diff().clip(lower=0).sum() if "post_bat_score" in gdf.columns else 0
+        h = gdf["events"].isin(hit_events | hr_events).sum()
+        bb = (gdf["events"] == "walk").sum()
+        hbp = (gdf["events"] == "hit_by_pitch").sum()
+        baserunners = h + bb + hbp
+        if baserunners > 0:
+            lob_pct = 1 - (runs / baserunners) if baserunners > runs else 0
+            lob_rows.append({"game_date": gd, "lob_pct": max(0, min(1, lob_pct))})
+        else:
+            lob_rows.append({"game_date": gd, "lob_pct": float("nan")})
+
+    if lob_rows:
+        lob_df = pd.DataFrame(lob_rows)
+        lob_df["game_date"] = pd.to_datetime(lob_df["game_date"]).dt.strftime("%Y-%m-%d")
+        per_game["game_date"] = pd.to_datetime(per_game["game_date"]).dt.strftime("%Y-%m-%d")
+        per_game = per_game.merge(lob_df, on="game_date", how="left")
+    else:
+        per_game["game_date"] = pd.to_datetime(per_game["game_date"]).dt.strftime("%Y-%m-%d")
+        per_game["lob_pct"] = float("nan")
+
+    per_game = per_game.drop(columns=[
+        "called_strikes", "first_pitches", "first_pitch_strikes",
+        "batted_balls", "hard_hits", "hits_no_hr", "hrs", "bip", "sfs", "ks",
+    ])
     return per_game
 
 
@@ -1532,6 +1589,24 @@ with tab_insights:
             if insight_opp.strip() and "opp_team" in gl.columns:
                 gl_matchup = gl[gl["opp_team"].str.contains(insight_opp.strip(), case=False, na=False)]
 
+            _COL_TOOLTIPS = {
+                "Date": "Game date",
+                "Opp": "Opposing team",
+                "K": "Strikeouts",
+                "BB": "Walks allowed",
+                "HA": "Hits allowed",
+                "Outs": "Outs recorded",
+                "Pit": "Total pitches thrown",
+                "K%": "Strikeout rate (K / batters faced)",
+                "Whf": "Whiffs (swinging strikes)",
+                "CSW%": "Called Strikes + Whiffs / total pitches. Measures raw stuff quality.",
+                "FPS%": "First Pitch Strike %. Pitchers ahead in counts K more and go deeper.",
+                "Brl": "Barrels allowed (Statcast barrel = optimal EV + launch angle combo)",
+                "HH%": "Hard-Hit rate. % of batted balls with exit velo ≥ 95 mph.",
+                "BABIP": "Batting Avg on Balls in Play. Avg ~.300 — lower = lucky, higher = unlucky.",
+                "LOB%": "Left on Base %. Avg ~72% — higher = stranding more runners (lucky).",
+            }
+
             def _format_game_table(df_slice):
                 """Format a game log slice for display with pitch stats."""
                 display = df_slice.rename(columns={
@@ -1541,25 +1616,36 @@ with tab_insights:
                     "pitches": "Pit", "whiffs": "Whf", "csw_pct": "CSW%",
                     "walks": "BB", "fps_pct": "FPS%",
                     "barrels": "Brl", "hard_hit_pct": "HH%",
+                    "babip": "BABIP", "lob_pct": "LOB%",
                 })
-                for pct_col in ["K%", "CSW%", "FPS%", "HH%"]:
+                for pct_col in ["K%", "CSW%", "FPS%", "HH%", "LOB%"]:
                     if pct_col in display.columns:
                         display[pct_col] = display[pct_col].apply(
                             lambda x: f"{float(x)*100:.1f}%" if pd.notna(x) else "—"
                         )
+                if "BABIP" in display.columns:
+                    display["BABIP"] = display["BABIP"].apply(
+                        lambda x: f".{int(float(x)*1000):03d}" if pd.notna(x) else "—"
+                    )
                 for int_col in ["Whf", "Pit", "BB", "Brl"]:
                     if int_col in display.columns:
                         display[int_col] = display[int_col].apply(
                             lambda x: int(x) if pd.notna(x) else "—"
                         )
-                cols = [c for c in ["Date", "Opp", "K", "BB", "HA", "Outs", "Pit", "K%", "Whf", "CSW%", "FPS%", "Brl", "HH%"] if c in display.columns]
-                return display[cols]
+                cols = [c for c in ["Date", "Opp", "K", "BB", "HA", "Outs", "Pit", "K%", "Whf", "CSW%", "FPS%", "Brl", "HH%", "BABIP", "LOB%"] if c in display.columns]
+                # Build column_config with help tooltips
+                col_config = {}
+                for c in cols:
+                    if c in _COL_TOOLTIPS:
+                        col_config[c] = st.column_config.TextColumn(c, help=_COL_TOOLTIPS[c])
+                return display[cols], col_config
 
             # --- Last 5 Games ---
             st.markdown("##### Last 5 Games")
             recent_5 = gl.head(5).copy()
             if not recent_5.empty:
-                st.dataframe(_format_game_table(recent_5), use_container_width=True, hide_index=True)
+                _r5_df, _r5_cfg = _format_game_table(recent_5)
+                st.dataframe(_r5_df, use_container_width=True, hide_index=True, column_config=_r5_cfg)
 
                 avg_k = recent_5["SO"].mean() if "SO" in recent_5.columns else 0
                 avg_outs = recent_5["Outs"].mean() if "Outs" in recent_5.columns else 0
@@ -1588,7 +1674,8 @@ with tab_insights:
                 )
 
             if not gl_matchup.empty:
-                st.dataframe(_format_game_table(gl_matchup.head(5)), use_container_width=True, hide_index=True)
+                _mu_df, _mu_cfg = _format_game_table(gl_matchup.head(5))
+                st.dataframe(_mu_df, use_container_width=True, hide_index=True, column_config=_mu_cfg)
 
                 if insight_opp.strip() and len(gl_matchup) > 0:
                     avg_k = gl_matchup["SO"].mean() if "SO" in gl_matchup.columns else 0
