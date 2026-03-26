@@ -484,13 +484,6 @@ def build_per_game_pitch_stats(df: pd.DataFrame) -> pd.DataFrame:
     df["is_sf"] = df["events"].isin(sf_events)
     df["is_k"] = df["events"].isin({"strikeout", "strikeout_double_play"})
 
-    # LOB%: need runners on base and runs scored per at-bat
-    # A runner is "on base" if on_1b, on_2b, or on_3b is not null before the pitch
-    df["has_runner"] = False
-    for base_col in ["on_1b", "on_2b", "on_3b"]:
-        if base_col in df.columns:
-            df["has_runner"] = df["has_runner"] | df[base_col].notna()
-
     per_game = df.groupby("game_date").agg(
         pitches=("pitch_type", "count"),
         whiffs=("description", lambda x: x.isin(WHIFF_DESCS).sum()),
@@ -518,19 +511,20 @@ def build_per_game_pitch_stats(df: pd.DataFrame) -> pd.DataFrame:
     babip_denom = per_game["bip"] - per_game["hrs"] - per_game["ks"] + per_game["sfs"]
     per_game["babip"] = per_game["hits_no_hr"] / babip_denom.replace(0, float("nan"))
 
-    # LOB% from Statcast: compute per-game from event-level baserunner data
-    # Group events with runners on to compute LOB%
+    # LOB% = (H + BB + HBP - R) / (H + BB + HBP - 1.4*HR)
+    # Standard formula — R = max(post_bat_score) per game (total runs allowed)
     events_df = df[df["events"].notna()].copy()
     lob_rows = []
     for gd, gdf in events_df.groupby("game_date"):
-        runners_on = gdf["has_runner"].sum()  # at-bats with runners on
-        runs = gdf["post_bat_score"].diff().clip(lower=0).sum() if "post_bat_score" in gdf.columns else 0
         h = gdf["events"].isin(hit_events | hr_events).sum()
         bb = (gdf["events"] == "walk").sum()
         hbp = (gdf["events"] == "hit_by_pitch").sum()
+        hr = (gdf["events"] == "home_run").sum()
+        runs = int(gdf["post_bat_score"].max()) if "post_bat_score" in gdf.columns and gdf["post_bat_score"].notna().any() else 0
         baserunners = h + bb + hbp
-        if baserunners > 0:
-            lob_pct = 1 - (runs / baserunners) if baserunners > runs else 0
+        denom = baserunners - 1.4 * hr
+        if denom > 0 and baserunners > 0:
+            lob_pct = (baserunners - runs) / denom
             lob_rows.append({"game_date": gd, "lob_pct": max(0, min(1, lob_pct))})
         else:
             lob_rows.append({"game_date": gd, "lob_pct": float("nan")})
