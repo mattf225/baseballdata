@@ -1341,7 +1341,12 @@ with tab_odds:
     with col_pi1:
         insight_player = st.text_input("Pitcher Name", key="insight_player", placeholder="e.g. Logan Webb")
     with col_pi2:
-        insight_opp = st.text_input("Filter by Opponent (optional)", key="insight_opp", placeholder="e.g. NYY")
+        MLB_TEAMS = [
+            "", "ARI", "ATL", "BAL", "BOS", "CHC", "CWS", "CIN", "CLE", "COL",
+            "DET", "HOU", "KC", "LAA", "LAD", "MIA", "MIL", "MIN", "NYM", "NYY",
+            "OAK", "PHI", "PIT", "SD", "SEA", "SF", "STL", "TB", "TEX", "TOR", "WSH",
+        ]
+        insight_opp = st.selectbox("Filter by Opponent (optional)", options=MLB_TEAMS, key="insight_opp", format_func=lambda x: "All Teams" if x == "" else x)
 
     if insight_player.strip():
         gl = load_pitcher_gamelogs(insight_player)
