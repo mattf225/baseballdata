@@ -328,6 +328,24 @@ def load_line_movements(sportsbook: str = "All", market: str = "All", player: st
 
 
 @st.cache_data(ttl=300)
+def load_pitcher_names() -> list:
+    """Returns sorted list of unique pitcher names from gamelogs for autocomplete."""
+    supabase = get_supabase()
+    try:
+        response = (
+            supabase.table("pitcher_gamelogs")
+            .select("pitcher_name")
+            .execute()
+        )
+        if not response.data:
+            return []
+        names = sorted({r["pitcher_name"] for r in response.data if r.get("pitcher_name")})
+        return names
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=300)
 def load_pitcher_gamelogs(player_name: str = "") -> pd.DataFrame:
     """Loads pitcher gamelogs from Supabase. Optionally filter by player name."""
     supabase = get_supabase()
@@ -1339,7 +1357,13 @@ with tab_odds:
 
     col_pi1, col_pi2 = st.columns([2, 2])
     with col_pi1:
-        insight_player = st.text_input("Pitcher Name", key="insight_player", placeholder="e.g. Logan Webb")
+        pitcher_names = [""] + load_pitcher_names()
+        insight_player = st.selectbox(
+            "Pitcher Name",
+            options=pitcher_names,
+            key="insight_player",
+            format_func=lambda x: "Type to search..." if x == "" else x,
+        )
     with col_pi2:
         MLB_TEAMS = [
             "", "ARI", "ATL", "BAL", "BOS", "CHC", "CWS", "CIN", "CLE", "COL",
