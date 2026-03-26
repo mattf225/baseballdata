@@ -196,6 +196,8 @@ def load_alerts() -> pd.DataFrame:
     df["sent_at"] = pd.to_datetime(df["sent_at"], utc=True)
     df["game_date"] = df["sent_at"].dt.date
     df["market_label"] = df["market"].map(MARKET_LABELS).fillna(df["market"])
+    # All pipeline alerts are Over bets — prefix with "O" for display
+    df["market_display"] = "O " + df["market_label"]
 
     # Re-derive implied probability from stored odds for calibration chart
     def parse_implied(odds_str):
@@ -445,7 +447,7 @@ with tab_overview:
         recent["outcome"] = recent["actual_outcome"].apply(outcome_badge)
         recent["sent_at"] = to_pst(recent["sent_at"])
         recent = recent.drop(columns=["calculated_edge_percentage", "actual_outcome"])
-        recent = recent[["player_name", "market_label", "sportsbook", "odds_formatted", "edge", "sent_at", "outcome"]]
+        recent = recent[["player_name", "market_display", "sportsbook", "odds_formatted", "edge", "sent_at", "outcome"]]
         recent.columns    = ["Player", "Market", "Book", "Odds", "Edge", "Sent At", "Outcome"]
         st.dataframe(recent, use_container_width=True, hide_index=True)
 
@@ -500,7 +502,7 @@ with tab_history:
                     unsafe_allow_html=True)
 
         hist_cols = [
-            "player_name", "market_label", "sportsbook", "odds_formatted",
+            "player_name", "market_display", "sportsbook", "odds_formatted",
             "calculated_edge_percentage", "model_prob", "implied_prob",
             "game_date", "actual_outcome"
         ]
@@ -519,7 +521,7 @@ with tab_history:
         display["Date"]         = display["game_date"].astype(str)
 
         display = display.rename(columns={
-            "player_name": "Player", "market_label": "Market",
+            "player_name": "Player", "market_display": "Market",
             "sportsbook": "Sportsbook", "odds_formatted": "Odds",
         })
         final_hist_cols = ["Player", "Market"]
@@ -589,7 +591,7 @@ with tab_accuracy:
                     unsafe_allow_html=True,
                 )
                 disp_acc = resolved[[
-                    "player_name", "market_label", "point", "sportsbook",
+                    "player_name", "market_display", "point", "sportsbook",
                     "odds_formatted", "calculated_edge_percentage",
                     "model_prob", "implied_prob", "sent_at", "actual_outcome"
                 ]].copy()
@@ -611,7 +613,7 @@ with tab_accuracy:
                 disp_acc["Date"] = pd.to_datetime(disp_acc["sent_at"]).dt.strftime("%Y-%m-%d")
                 disp_acc = disp_acc.rename(columns={
                     "player_name": "Player",
-                    "market_label": "Market",
+                    "market_display": "Market",
                     "sportsbook": "Sportsbook",
                     "odds_formatted": "Odds",
                 })
