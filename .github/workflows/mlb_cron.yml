@@ -4,7 +4,8 @@ on:
   schedule:
     # Runs every 1 hour for 15 hours during active MLB hours (e.g. from 12pm to 2am EST)
     # Note: Cron is in UTC time. Running 15 times per day to stay within API limits.
-    - cron: '0 16-23,0-6 * 4-10 *'
+    # Season starts March 26 (Tokyo Opening Series), ends October 15
+    - cron: '0 16-23,0-6 * 3-10 *'
   workflow_dispatch: # Allows manual triggering from the GitHub Actions UI
 
 jobs:

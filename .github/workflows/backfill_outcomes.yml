@@ -3,7 +3,7 @@ name: B.L.A.S.T. Daily Outcome Backfill
 on:
   schedule:
     # Runs daily at 12:00 UTC (8am ET) — Statcast data from previous day is available by then
-    - cron: '0 12 * 4-10 *'
+    - cron: '0 12 * 3-10 *'
   workflow_dispatch: # Allows manual triggering from the GitHub Actions UI
 
 jobs:

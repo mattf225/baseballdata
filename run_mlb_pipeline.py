@@ -32,8 +32,8 @@ logger = logging.getLogger(__name__)
 
 REQUIRED_ENV_VARS = ["ODDS_API_KEY", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "DISCORD_WEBHOOK_URL"]
 
-# MLB regular season: April 1 – October 15
-SEASON_START_MONTH, SEASON_START_DAY = 4, 1
+# MLB regular season: March 26 – October 15 (2026 season opens in Tokyo)
+SEASON_START_MONTH, SEASON_START_DAY = 3, 26
 SEASON_END_MONTH,   SEASON_END_DAY   = 10, 15
 
 def validate_env():
@@ -54,7 +54,7 @@ def main():
     logger.info("Initializing B.L.A.S.T. MLB Pipeline...")
 
     if not is_regular_season() and not os.environ.get("ALLOW_SPRING_TRAINING"):
-        logger.info("Outside MLB regular season (Apr 1 – Oct 15). Pipeline exiting — spring training and off-season games are not supported.")
+        logger.info("Outside MLB regular season (Mar 26 – Oct 15). Pipeline exiting — set ALLOW_SPRING_TRAINING=true to override.")
         logger.info("Set ALLOW_SPRING_TRAINING=true in .env to override for testing.")
         return
 
