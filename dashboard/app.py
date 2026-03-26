@@ -389,8 +389,8 @@ with _rc2:
         st.cache_data.clear()
         st.rerun()
 
-tab_overview, tab_history, tab_accuracy, tab_pnl, tab_daily, tab_odds, tab_movements = st.tabs([
-    "📊 Overview", "📋 Alert History", "🎯 Model Accuracy", "💰 P&L & Retraining", "📅 Daily EV Summary", "📈 Odds Explorer", "📉 Line Movements"
+tab_overview, tab_history, tab_accuracy, tab_pnl, tab_daily, tab_odds, tab_insights, tab_movements = st.tabs([
+    "📊 Overview", "📋 Alert History", "🎯 Model Accuracy", "💰 P&L & Retraining", "📅 Daily EV Summary", "📈 Odds Explorer", "🔍 Player Insights", "📉 Line Movements"
 ])
 
 
@@ -1349,13 +1349,16 @@ with tab_odds:
         csv_odds = df_odds.to_csv(index=False).encode("utf-8")
         st.download_button("⬇ Export CSV", csv_odds, "blast_odds.csv", "text/csv", key="odds_csv")
 
-    # --- Player Insights Section ---
-    st.markdown("<hr>", unsafe_allow_html=True)
+
+# ===========================================================================
+# TAB 7 — PLAYER INSIGHTS
+# ===========================================================================
+with tab_insights:
     st.markdown("#### Player Insights")
     st.markdown(
         f'<p style="color:{MUTED}; font-size:0.82rem;">'
-        f'Search for a pitcher to see their last 5 games and matchup history. '
-        f'Data comes from pitcher gamelogs stored by the pipeline.</p>',
+        f'Search for a pitcher to see their last 5 games, matchup history, and current prop odds. '
+        f'Data comes from pitcher gamelogs and live odds stored by the pipeline.</p>',
         unsafe_allow_html=True,
     )
 
@@ -1430,7 +1433,7 @@ with tab_odds:
                     st.markdown("##### Matchup History")
                     st.markdown(
                         f'<p style="color:{MUTED}; font-size:0.82rem;">'
-                        f'Enter an opponent abbreviation above to filter.</p>',
+                        f'Select an opponent above to filter.</p>',
                         unsafe_allow_html=True,
                     )
 
@@ -1466,8 +1469,55 @@ with tab_odds:
                 elif insight_opp.strip():
                     st.info(f"No matchups found vs '{insight_opp}'.")
 
+            # --- Current Pitcher Prop Odds ---
+            st.markdown("<hr>", unsafe_allow_html=True)
+            st.markdown("##### Current Pitcher Prop Odds")
+
+            # Resolve pitcher name for odds lookup — handle "last, first" format
+            pi_name = insight_player.strip()
+            if "," in pi_name:
+                parts = pi_name.split(",", 1)
+                pi_search = f"{parts[1].strip()} {parts[0].strip()}"
+            else:
+                pi_search = pi_name
+
+            df_pitcher_odds = load_odds(player=pi_search)
+            pitcher_markets = ["pitcher_strikeouts", "pitcher_outs", "pitcher_hits_allowed", "pitcher_walks_allowed"]
+            if not df_pitcher_odds.empty:
+                df_pitcher_odds = df_pitcher_odds[df_pitcher_odds["market"].isin(pitcher_markets)]
+
+                # Keep only the most recent snapshot per market + sportsbook
+                if not df_pitcher_odds.empty:
+                    df_pitcher_odds = df_pitcher_odds.sort_values("fetched_at", ascending=False)
+                    df_pitcher_odds = df_pitcher_odds.drop_duplicates(subset=["market", "sportsbook"], keep="first")
+
+                    display_props = df_pitcher_odds.copy()
+                    display_props["Market"] = display_props["market"].map(MARKET_LABELS).fillna(display_props["market"])
+                    display_props["Book"] = display_props["sportsbook"]
+                    display_props["Line"] = display_props["point"].apply(lambda x: f"O {x}" if pd.notna(x) else "—")
+                    display_props["Odds"] = display_props["odds_american"].apply(
+                        lambda x: f"+{int(x)}" if x > 0 else str(int(x))
+                    )
+                    display_props["Implied %"] = display_props["implied_prob"].apply(
+                        lambda x: f"{float(x)*100:.1f}%" if pd.notna(x) else "—"
+                    )
+                    display_props["Model %"] = display_props["model_prob"].apply(
+                        lambda x: f"{float(x)*100:.1f}%" if pd.notna(x) else "—"
+                    )
+                    display_props["Edge"] = display_props["edge"].apply(
+                        lambda x: f"+{float(x)*100:.1f}%" if pd.notna(x) and x > 0 else (f"{float(x)*100:.1f}%" if pd.notna(x) else "—")
+                    )
+
+                    prop_cols = ["Market", "Book", "Line", "Odds", "Implied %", "Model %", "Edge"]
+                    st.dataframe(display_props[prop_cols], use_container_width=True, hide_index=True)
+                else:
+                    st.info(f"No pitcher prop odds found for '{pi_search}' today.")
+            else:
+                st.info(f"No pitcher prop odds found for '{pi_search}' today.")
+
+
 # ===========================================================================
-# TAB 6 — LINE MOVEMENTS
+# TAB 8 — LINE MOVEMENTS
 # ===========================================================================
 with tab_movements:
     st.markdown("#### Line Movements")
