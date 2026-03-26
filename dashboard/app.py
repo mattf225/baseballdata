@@ -507,6 +507,13 @@ def build_per_game_pitch_stats(df: pd.DataFrame) -> pd.DataFrame:
     per_game["fps_pct"] = per_game["first_pitch_strikes"] / per_game["first_pitches"].replace(0, 1)
     per_game["hard_hit_pct"] = per_game["hard_hits"] / per_game["batted_balls"].replace(0, 1)
 
+    # Average exit velocity on batted balls
+    if "launch_speed" in df.columns:
+        bip_df = df[df["description"] == "hit_into_play"].copy()
+        avg_ev = bip_df.groupby("game_date")["launch_speed"].mean().reset_index()
+        avg_ev.columns = ["game_date", "avg_ev"]
+        per_game = per_game.merge(avg_ev, on="game_date", how="left")
+
     # BABIP = (H - HR) / (BIP - HR - K + SF)  — only on balls in play
     babip_denom = per_game["bip"] - per_game["hrs"] - per_game["ks"] + per_game["sfs"]
     per_game["babip"] = per_game["hits_no_hr"] / babip_denom.replace(0, float("nan"))
@@ -540,7 +547,7 @@ def build_per_game_pitch_stats(df: pd.DataFrame) -> pd.DataFrame:
 
     per_game = per_game.drop(columns=[
         "called_strikes", "first_pitches", "first_pitch_strikes",
-        "batted_balls", "hard_hits", "hits_no_hr", "hrs", "bip", "sfs", "ks",
+        "batted_balls", "hard_hits", "hits_no_hr", "bip", "sfs", "ks",
     ])
     return per_game
 
@@ -1595,7 +1602,9 @@ with tab_insights:
                 "Whf": "Whiffs (swinging strikes)",
                 "CSW%": "Called Strikes + Whiffs / total pitches. Measures raw stuff quality.",
                 "FPS%": "First Pitch Strike %. Pitchers ahead in counts K more and go deeper.",
+                "HR": "Home runs allowed",
                 "Brl": "Barrels allowed (Statcast barrel = optimal EV + launch angle combo)",
+                "Avg EV": "Average exit velocity (mph) on batted balls. League avg ~88 mph.",
                 "HH%": "Hard-Hit rate. % of batted balls with exit velo ≥ 95 mph.",
                 "BABIP": "Batting Avg on Balls in Play. Avg ~.300 — lower = lucky, higher = unlucky.",
                 "LOB%": "Left on Base %. Avg ~72% — higher = stranding more runners (lucky).",
@@ -1611,6 +1620,7 @@ with tab_insights:
                     "walks": "BB", "fps_pct": "FPS%",
                     "barrels": "Brl", "hard_hit_pct": "HH%",
                     "babip": "BABIP", "lob_pct": "LOB%",
+                    "hrs": "HR", "avg_ev": "Avg EV",
                 })
                 for pct_col in ["K%", "CSW%", "FPS%", "HH%", "LOB%"]:
                     if pct_col in display.columns:
@@ -1621,12 +1631,16 @@ with tab_insights:
                     display["BABIP"] = display["BABIP"].apply(
                         lambda x: f".{int(float(x)*1000):03d}" if pd.notna(x) else "—"
                     )
-                for int_col in ["Whf", "Pit", "BB", "Brl"]:
+                if "Avg EV" in display.columns:
+                    display["Avg EV"] = display["Avg EV"].apply(
+                        lambda x: f"{float(x):.1f}" if pd.notna(x) else "—"
+                    )
+                for int_col in ["Whf", "Pit", "BB", "Brl", "HR"]:
                     if int_col in display.columns:
                         display[int_col] = display[int_col].apply(
                             lambda x: int(x) if pd.notna(x) else "—"
                         )
-                cols = [c for c in ["Date", "Opp", "K", "BB", "HA", "Outs", "Pit", "K%", "Whf", "CSW%", "FPS%", "Brl", "HH%", "BABIP", "LOB%"] if c in display.columns]
+                cols = [c for c in ["Date", "Opp", "K", "BB", "HA", "HR", "Outs", "Pit", "K%", "Whf", "CSW%", "FPS%", "Brl", "Avg EV", "HH%", "BABIP", "LOB%"] if c in display.columns]
                 # Build column_config with help tooltips
                 col_config = {}
                 for c in cols:
