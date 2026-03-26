@@ -181,6 +181,7 @@ Run these SQL migrations in the Supabase SQL Editor:
 | `dashboard/migrate_add_line_movements.sql` | `mlb_line_movements` | Tracks odds shifts between pipeline runs |
 | `dashboard/migrate_add_model_prob.sql` | `mlb_odds_log` | Adds `model_prob` and `edge` columns |
 | `dashboard/migrate_add_alert_point.sql` | `mlb_alert_log` | Adds `point` (line) column |
+| `dashboard/migrate_add_movement_points.sql` | `mlb_line_movements` | Adds `old_point` and `new_point` columns |
 
 **Important:** Pitcher gamelogs columns must use quoted uppercase names (`"BF"`, `"SO"`, `"HA"`, `"Outs"`, `"BBA"`, `"K_pct"`).
 

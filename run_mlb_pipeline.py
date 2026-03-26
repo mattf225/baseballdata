@@ -204,6 +204,8 @@ def main():
                 "old_implied_prob": float(prev["implied_prob"]),
                 "new_implied_prob": float(row["implied_prob"]),
                 "prob_shift":       prob_shift,
+                "old_point":        prev.get("point"),
+                "new_point":        row.get("point"),
             })
         db.log_line_movements_batch(movements)
         logger.info(f"Line movement detection: {len(movements)} movements logged.")

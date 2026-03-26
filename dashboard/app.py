@@ -292,7 +292,7 @@ def load_line_movements(sportsbook: str = "All", market: str = "All", player: st
     try:
         q = (
             supabase.table("mlb_line_movements")
-            .select("player_name, market, sportsbook, game_date, old_odds, new_odds, old_implied_prob, new_implied_prob, prob_shift, detected_at")
+            .select("player_name, market, sportsbook, game_date, old_odds, new_odds, old_implied_prob, new_implied_prob, prob_shift, old_point, new_point, detected_at")
             .order("detected_at", desc=True)
             .limit(2000)
         )
@@ -1384,6 +1384,13 @@ with tab_movements:
         )
 
         display_mv = df_mv.copy()
+        def _fmt_point(val):
+            if pd.isna(val) or val is None: return "—"
+            v = float(val)
+            return str(int(v)) if v == int(v) else str(v)
+
+        display_mv["Old Line"]  = display_mv["old_point"].apply(_fmt_point)
+        display_mv["New Line"]  = display_mv["new_point"].apply(_fmt_point)
         display_mv["Old Odds"]  = display_mv["old_odds"].apply(_fmt_odds)
         display_mv["New Odds"]  = display_mv["new_odds"].apply(_fmt_odds)
         display_mv["Old Prob"]  = display_mv["old_implied_prob"].apply(lambda x: f"{float(x)*100:.1f}%" if pd.notna(x) else "—")
@@ -1396,7 +1403,7 @@ with tab_movements:
             "sportsbook":   "Book",
             "game_date":    "Game Date",
         })
-        display_mv = display_mv[["Player", "Market", "Book", "Game Date", "Old Odds", "New Odds", "Old Prob", "New Prob", "Shift", "Detected"]]
+        display_mv = display_mv[["Player", "Market", "Book", "Game Date", "Old Line", "Old Odds", "New Line", "New Odds", "Old Prob", "New Prob", "Shift", "Detected"]]
         st.dataframe(display_mv, use_container_width=True, hide_index=True, height=560)
 
         # Prob shift distribution chart

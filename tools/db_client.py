@@ -94,7 +94,7 @@ class DatabaseClient:
         try:
             response = (
                 self.supabase.table("mlb_odds_log")
-                .select("player_name, market, sportsbook, odds_american, implied_prob, fetched_at")
+                .select("player_name, market, sportsbook, odds_american, implied_prob, fetched_at, point")
                 .eq("game_date", game_date)
                 .order("fetched_at", desc=True)
                 .limit(5000)
