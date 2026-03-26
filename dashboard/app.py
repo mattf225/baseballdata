@@ -351,7 +351,13 @@ df_raw = load_alerts()
 
 last_refresh = datetime.now(timezone.utc).strftime("%b %d %Y, %H:%M UTC")
 alert_count = len(df_raw) if not df_raw.empty else 0
-st.markdown(f'<p style="color:{MUTED}; font-size:0.78rem; margin-bottom:1rem;">Data refreshed: {last_refresh} &nbsp;·&nbsp; {alert_count:,} total alerts</p>', unsafe_allow_html=True)
+_rc1, _rc2 = st.columns([6, 1])
+with _rc1:
+    st.markdown(f'<p style="color:{MUTED}; font-size:0.78rem; margin-bottom:1rem;">Data refreshed: {last_refresh} &nbsp;·&nbsp; {alert_count:,} total alerts</p>', unsafe_allow_html=True)
+with _rc2:
+    if st.button("↺ Refresh", key="global_refresh"):
+        st.cache_data.clear()
+        st.rerun()
 
 tab_overview, tab_history, tab_accuracy, tab_pnl, tab_daily, tab_odds, tab_movements = st.tabs([
     "📊 Overview", "📋 Alert History", "🎯 Model Accuracy", "💰 P&L & Retraining", "📅 Daily EV Summary", "📈 Odds Explorer", "📉 Line Movements"
