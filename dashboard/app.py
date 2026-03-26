@@ -571,6 +571,43 @@ with tab_accuracy:
 
                 st.markdown("<hr>", unsafe_allow_html=True)
 
+                # Alerts table
+                st.markdown(
+                    f'<p style="color:{MUTED}; font-size:0.8rem;">{len(resolved):,} alerts</p>',
+                    unsafe_allow_html=True,
+                )
+                disp_acc = resolved[[
+                    "player_name", "market_label", "point", "sportsbook",
+                    "odds_formatted", "calculated_edge_percentage",
+                    "model_prob", "implied_prob", "sent_at", "actual_outcome"
+                ]].copy()
+                disp_acc["Edge"] = disp_acc["calculated_edge_percentage"].apply(
+                    lambda x: f"+{x*100:.1f}%" if pd.notna(x) else "—"
+                )
+                disp_acc["Model Prob"] = disp_acc["model_prob"].apply(
+                    lambda x: f"{x*100:.1f}%" if pd.notna(x) else "—"
+                )
+                disp_acc["Implied Prob"] = disp_acc["implied_prob"].apply(
+                    lambda x: f"{x*100:.1f}%" if pd.notna(x) else "—"
+                )
+                disp_acc["Line"] = disp_acc["point"].apply(
+                    lambda x: str(x) if pd.notna(x) else "—"
+                )
+                disp_acc["Outcome"] = disp_acc["actual_outcome"].apply(
+                    lambda x: "✅ Hit" if x is True else ("❌ Miss" if x is False else "⏳ Pending")
+                )
+                disp_acc["Date"] = pd.to_datetime(disp_acc["sent_at"]).dt.strftime("%Y-%m-%d")
+                disp_acc = disp_acc.rename(columns={
+                    "player_name": "Player",
+                    "market_label": "Market",
+                    "sportsbook": "Sportsbook",
+                    "odds_formatted": "Odds",
+                })
+                disp_acc = disp_acc[["Player", "Market", "Line", "Sportsbook", "Odds", "Edge", "Model Prob", "Implied Prob", "Date", "Outcome"]]
+                st.dataframe(disp_acc, use_container_width=True, hide_index=True, height=280)
+
+                st.markdown("<hr>", unsafe_allow_html=True)
+
                 col_l, col_r = st.columns(2)
 
                 with col_l:
