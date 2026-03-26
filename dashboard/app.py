@@ -357,13 +357,17 @@ def load_pitcher_gamelogs(player_name: str = "") -> pd.DataFrame:
         )
         if player_name.strip():
             name = player_name.strip().lower()
-            parts = name.split()
-            if len(parts) == 2:
-                # Support both "first last" and "last, first" formats
-                flipped = f"{parts[1]}, {parts[0]}"
-                q = q.or_(f"pitcher_name.ilike.%{name}%,pitcher_name.ilike.%{flipped}%")
-            else:
+            if "," in name:
+                # Exact "last, first" format from DB — match directly
                 q = q.ilike("pitcher_name", f"%{name}%")
+            else:
+                parts = name.split()
+                if len(parts) == 2:
+                    # Support both "first last" and "last, first" formats
+                    flipped = f"{parts[1]}, {parts[0]}"
+                    q = q.or_(f"pitcher_name.ilike.%{name}%,pitcher_name.ilike.%{flipped}%")
+                else:
+                    q = q.ilike("pitcher_name", f"%{name}%")
         q = q.limit(50)
         response = q.execute()
         if not response.data:
