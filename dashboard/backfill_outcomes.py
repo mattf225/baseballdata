@@ -62,6 +62,27 @@ def fetch_statcast_for_date(game_date: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def _last_first_to_first_last(name: str) -> str:
+    """Converts 'Webb, Logan' → 'Logan Webb' to match alert player names."""
+    if "," in name:
+        parts = name.split(",", 1)
+        return f"{parts[1].strip()} {parts[0].strip()}"
+    return name
+
+
+def _resolve_batter_names(batter_ids: list) -> dict:
+    """Returns {batter_id: 'First Last'} via playerid_reverse_lookup."""
+    try:
+        lookup = pybaseball.playerid_reverse_lookup(batter_ids, key_type="mlbam")
+        return {
+            int(r["key_mlbam"]): f"{r['name_first']} {r['name_last']}".strip()
+            for _, r in lookup.iterrows()
+        }
+    except Exception as e:
+        print(f"  Warning: batter name lookup failed: {e}")
+        return {}
+
+
 def build_batter_game_log(df: pd.DataFrame) -> pd.DataFrame:
     """Aggregates Statcast data into per-batter game totals."""
     ab_events = [
@@ -85,14 +106,10 @@ def build_batter_game_log(df: pd.DataFrame) -> pd.DataFrame:
         TB=("TB", "sum"),
     ).reset_index()
 
-    # Merge batter name from player_name field
-    names = (
-        df_ab[["batter", "batter_name"]]
-        .drop_duplicates("batter")
-        if "batter_name" in df_ab.columns
-        else df_ab[["batter"]].assign(batter_name=None).drop_duplicates("batter")
-    )
-    game_log = game_log.merge(names, on="batter", how="left")
+    # Resolve batter IDs → "First Last" names
+    batter_ids = game_log["batter"].astype(int).tolist()
+    id_to_name = _resolve_batter_names(batter_ids)
+    game_log["batter_name"] = game_log["batter"].astype(int).map(id_to_name)
     return game_log
 
 
@@ -124,13 +141,13 @@ def build_pitcher_game_log(df: pd.DataFrame) -> pd.DataFrame:
         Outs=("Outs", "sum"),
     ).reset_index()
 
-    names = (
-        df_ev[["pitcher", "pitcher_name"]]
-        .drop_duplicates("pitcher")
-        if "pitcher_name" in df_ev.columns
-        else df_ev[["pitcher"]].assign(pitcher_name=None).drop_duplicates("pitcher")
-    )
-    game_log = game_log.merge(names, on="pitcher", how="left")
+    # player_name in Statcast is "Last, First" keyed to pitcher ID
+    if "player_name" in df_ev.columns:
+        names = df_ev[["pitcher", "player_name"]].drop_duplicates("pitcher").copy()
+        names["pitcher_name"] = names["player_name"].apply(_last_first_to_first_last)
+        game_log = game_log.merge(names[["pitcher", "pitcher_name"]], on="pitcher", how="left")
+    else:
+        game_log["pitcher_name"] = None
     return game_log
 
 
