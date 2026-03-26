@@ -1,0 +1,19 @@
+{
+  "market": "batter_home_runs",
+  "target": "Target_HR",
+  "trained_at": "2026-03-24T21:29:41.643342Z",
+  "data_source": "/Users/mattfix/baseballdata/model/data/mlb_training_dataset.csv",
+  "training_rows": 122759,
+  "test_rows": 30690,
+  "roc_auc": 0.5982,
+  "brier_score": 0.0953,
+  "features": [
+    "rolling_10_PA",
+    "rolling_10_AB",
+    "rolling_10_H",
+    "rolling_10_HR",
+    "rolling_10_SO",
+    "rolling_10_TB"
+  ],
+  "positive_class_rate": 0.1081
+}

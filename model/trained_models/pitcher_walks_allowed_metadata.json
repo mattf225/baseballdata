@@ -1,0 +1,24 @@
+{
+  "market": "pitcher_walks_allowed",
+  "target": "Target_BBA_Over_1_5",
+  "trained_at": "2026-03-24T21:31:13.980772Z",
+  "data_source": "/Users/mattfix/baseballdata/model/data/mlb_pitcher_training_dataset.csv",
+  "training_rows": 12315,
+  "test_rows": 3079,
+  "roc_auc": 0.5872,
+  "brier_score": 0.2445,
+  "features": [
+    "rolling_5_BF",
+    "rolling_3_SO",
+    "rolling_5_SO",
+    "rolling_10_SO",
+    "rolling_3_K_pct",
+    "rolling_5_K_pct",
+    "rolling_10_K_pct",
+    "rolling_5_BBA",
+    "rolling_5_HA",
+    "rolling_5_Outs",
+    "opp_k_pct"
+  ],
+  "positive_class_rate": 0.5074
+}

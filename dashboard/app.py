@@ -285,14 +285,65 @@ def load_odds_books() -> list:
     return sorted({row["sportsbook"] for row in response.data if row.get("sportsbook")})
 
 
+@st.cache_data(ttl=60)
+def load_line_movements(sportsbook: str = "All", market: str = "All", player: str = "", min_shift: float = 0.01) -> pd.DataFrame:
+    """Loads recent line movements from mlb_line_movements."""
+    supabase = get_supabase()
+    try:
+        q = (
+            supabase.table("mlb_line_movements")
+            .select("player_name, market, sportsbook, game_date, old_odds, new_odds, old_implied_prob, new_implied_prob, prob_shift, detected_at")
+            .order("detected_at", desc=True)
+            .limit(2000)
+        )
+        response = q.execute()
+        if not response.data:
+            return pd.DataFrame()
+        df = pd.DataFrame(response.data)
+        df["detected_at"] = pd.to_datetime(df["detected_at"], utc=True)
+        df["prob_shift"] = df["prob_shift"].astype(float)
+        df["market_label"] = df["market"].map(MARKET_LABELS).fillna(df["market"])
+        if sportsbook != "All":
+            df = df[df["sportsbook"] == sportsbook]
+        if market != "All":
+            df = df[df["market_label"] == market]
+        if player:
+            df = df[df["player_name"].str.contains(player, case=False, na=False)]
+        df = df[df["prob_shift"].abs() >= min_shift]
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=300)
+def load_pitcher_gamelogs(player_name: str = "") -> pd.DataFrame:
+    """Loads pitcher gamelogs from Supabase. Optionally filter by player name."""
+    supabase = get_supabase()
+    try:
+        q = (
+            supabase.table("pitcher_gamelogs")
+            .select("pitcher_name, game_date, SO, HA, Outs, K_pct, opp_team, opp_k_pct")
+            .order("game_date", desc=True)
+        )
+        if player_name.strip():
+            q = q.ilike("pitcher_name", f"%{player_name.strip().lower()}%")
+        q = q.limit(50)
+        response = q.execute()
+        if not response.data:
+            return pd.DataFrame()
+        return pd.DataFrame(response.data)
+    except Exception:
+        return pd.DataFrame()
+
+
 df_raw = load_alerts()
 
 last_refresh = datetime.now(timezone.utc).strftime("%b %d %Y, %H:%M UTC")
 alert_count = len(df_raw) if not df_raw.empty else 0
 st.markdown(f'<p style="color:{MUTED}; font-size:0.78rem; margin-bottom:1rem;">Data refreshed: {last_refresh} &nbsp;·&nbsp; {alert_count:,} total alerts</p>', unsafe_allow_html=True)
 
-tab_overview, tab_history, tab_accuracy, tab_daily, tab_odds = st.tabs([
-    "📊 Overview", "📋 Alert History", "🎯 Model Accuracy", "📅 Daily EV Summary", "📈 Odds Explorer"
+tab_overview, tab_history, tab_accuracy, tab_pnl, tab_daily, tab_odds, tab_movements = st.tabs([
+    "📊 Overview", "📋 Alert History", "🎯 Model Accuracy", "💰 P&L & Retraining", "📅 Daily EV Summary", "📈 Odds Explorer", "📉 Line Movements"
 ])
 
 
@@ -371,6 +422,7 @@ with tab_overview:
         recent["outcome"] = recent["actual_outcome"].apply(outcome_badge)
         recent["sent_at"] = recent["sent_at"].dt.strftime("%b %d, %H:%M")
         recent = recent.drop(columns=["calculated_edge_percentage", "actual_outcome"])
+        recent = recent[["player_name", "market_label", "sportsbook", "odds_formatted", "edge", "sent_at", "outcome"]]
         recent.columns    = ["Player", "Market", "Book", "Odds", "Edge", "Sent At", "Outcome"]
         st.dataframe(recent, use_container_width=True, hide_index=True)
 
@@ -388,21 +440,21 @@ with tab_history:
 
         with col_f1:
             all_markets = ["All"] + sorted(df_raw["market_label"].unique().tolist())
-            sel_market  = st.selectbox("Market", all_markets)
+            sel_market  = st.selectbox("Market", all_markets, key="hist_market")
 
         with col_f2:
             all_books = ["All"] + sorted(df_raw["sportsbook"].dropna().unique().tolist())
-            sel_book  = st.selectbox("Sportsbook", all_books)
+            sel_book  = st.selectbox("Sportsbook", all_books, key="hist_book")
 
         with col_f3:
             outcome_opts = {"All": None, "✓ Hit": True, "✗ Miss": False, "⏳ Pending": "pending"}
-            sel_outcome  = st.selectbox("Outcome", list(outcome_opts.keys()))
+            sel_outcome  = st.selectbox("Outcome", list(outcome_opts.keys()), key="hist_outcome")
 
         with col_f4:
             date_min = df_raw["game_date"].min()
             date_max = df_raw["game_date"].max()
             sel_dates = st.date_input("Date Range", value=(date_min, date_max),
-                                      min_value=date_min, max_value=date_max)
+                                      min_value=date_min, max_value=date_max, key="hist_dates")
 
         filtered = df_raw.copy()
         if sel_market != "All":
@@ -424,12 +476,19 @@ with tab_history:
         st.markdown(f'<p style="color:{MUTED}; font-size:0.8rem;">{len(filtered):,} results</p>',
                     unsafe_allow_html=True)
 
-        display = filtered[[
+        hist_cols = [
             "player_name", "market_label", "sportsbook", "odds_formatted",
             "calculated_edge_percentage", "model_prob", "implied_prob",
             "game_date", "actual_outcome"
-        ]].copy()
+        ]
+        has_point = "point" in filtered.columns
+        if has_point:
+            hist_cols.insert(3, "point")
 
+        display = filtered[hist_cols].copy()
+
+        if has_point:
+            display["Line"] = display["point"].apply(lambda x: str(x) if pd.notna(x) else "—")
         display["Edge"]         = display["calculated_edge_percentage"].apply(lambda x: f"+{x*100:.1f}%")
         display["Model Prob"]   = display["model_prob"].apply(lambda x: f"{x*100:.1f}%" if pd.notna(x) else "—")
         display["Implied Prob"] = display["implied_prob"].apply(lambda x: f"{x*100:.1f}%" if pd.notna(x) else "—")
@@ -440,8 +499,11 @@ with tab_history:
             "player_name": "Player", "market_label": "Market",
             "sportsbook": "Sportsbook", "odds_formatted": "Odds",
         })
-        display = display[["Player", "Market", "Sportsbook", "Odds", "Edge",
-                            "Model Prob", "Implied Prob", "Date", "Outcome"]]
+        final_hist_cols = ["Player", "Market"]
+        if has_point:
+            final_hist_cols += ["Line"]
+        final_hist_cols += ["Sportsbook", "Odds", "Edge", "Model Prob", "Implied Prob", "Date", "Outcome"]
+        display = display[final_hist_cols]
 
         st.dataframe(display, use_container_width=True, hide_index=True, height=520)
 
@@ -597,7 +659,253 @@ with tab_accuracy:
 
 
 # ===========================================================================
-# TAB 4 — DAILY EV SUMMARY
+# TAB 4 — P&L & RETRAINING
+# ===========================================================================
+with tab_pnl:
+    if df_raw.empty:
+        st.info("No alert data yet.")
+    else:
+        resolved = df_raw[df_raw["actual_outcome"].notna()].copy()
+
+        if resolved.empty:
+            st.info("Run `python3 dashboard/backfill_outcomes.py` to populate actual outcomes, then revisit this tab.")
+        else:
+            resolved["hit"] = resolved["actual_outcome"].astype(int)
+
+            # --- P&L calculation (flat $100 bet per alert) ---
+            def calc_payout(odds_str, hit):
+                """Returns net profit/loss for a $100 flat bet."""
+                try:
+                    odds = int(str(odds_str).replace("+", ""))
+                    if hit:
+                        return odds * 100 / 100 if odds > 0 else 100 / abs(odds) * 100
+                    return -100.0
+                except Exception:
+                    return 0.0
+
+            resolved["pnl"] = resolved.apply(
+                lambda r: calc_payout(r["odds_formatted"], r["hit"]), axis=1
+            )
+
+            total_pnl     = resolved["pnl"].sum()
+            total_wagered = len(resolved) * 100
+            roi           = (total_pnl / total_wagered * 100) if total_wagered > 0 else 0
+            avg_win       = resolved[resolved["hit"] == 1]["pnl"].mean() if resolved["hit"].sum() > 0 else 0
+            avg_loss      = resolved[resolved["hit"] == 0]["pnl"].mean() if (resolved["hit"] == 0).sum() > 0 else 0
+            win_rate      = resolved["hit"].mean() * 100
+
+            # KPI row
+            st.markdown("#### Profit & Loss (Flat $100 Bets)")
+            c1, c2, c3, c4, c5 = st.columns(5)
+            pnl_color = GREEN if total_pnl >= 0 else RED
+            with c1: kpi("Total P&L", f"${total_pnl:+,.0f}", pnl_color)
+            with c2: kpi("ROI", f"{roi:+.1f}%", GREEN if roi >= 0 else RED,
+                         f"${total_wagered:,.0f} wagered")
+            with c3: kpi("Win Rate", f"{win_rate:.1f}%", GREEN if win_rate >= 50 else RED,
+                         f"{resolved['hit'].sum()}/{len(resolved)} resolved")
+            with c4: kpi("Avg Win", f"${avg_win:+,.0f}", GREEN)
+            with c5: kpi("Avg Loss", f"${avg_loss:,.0f}", RED)
+
+            st.markdown("<hr>", unsafe_allow_html=True)
+
+            # --- Cumulative P&L chart ---
+            col_l, col_r = st.columns(2)
+
+            with col_l:
+                st.markdown("#### Cumulative P&L Over Time")
+                pnl_daily = (
+                    resolved.groupby("game_date")["pnl"].sum()
+                    .sort_index()
+                    .cumsum()
+                    .reset_index()
+                )
+                pnl_daily.columns = ["Date", "Cumulative P&L"]
+                pnl_daily["Date"] = pd.to_datetime(pnl_daily["Date"])
+                fig_pnl = go.Figure()
+                fig_pnl.add_trace(go.Scatter(
+                    x=pnl_daily["Date"], y=pnl_daily["Cumulative P&L"],
+                    mode="lines",
+                    fill="tozeroy",
+                    line=dict(color=TEAL, width=2),
+                    fillcolor="rgba(0, 212, 170, 0.15)",
+                ))
+                fig_pnl.add_hline(y=0, line_dash="dot", line_color=MUTED)
+                fig_pnl.update_layout(
+                    template=PLOTLY_TEMPLATE,
+                    plot_bgcolor=CARD_BG, paper_bgcolor=CARD_BG,
+                    margin=dict(l=0, r=0, t=10, b=0),
+                    yaxis_title="Cumulative P&L ($)", xaxis_title="",
+                    height=300,
+                )
+                st.plotly_chart(fig_pnl, use_container_width=True)
+
+            with col_r:
+                st.markdown("#### ROI by Edge Bucket")
+                resolved["edge_bucket"] = pd.cut(
+                    resolved["calculated_edge_percentage"] * 100,
+                    bins=[0, 5, 10, 15, 20, 30, 100],
+                    labels=["0-5%", "5-10%", "10-15%", "15-20%", "20-30%", "30%+"],
+                )
+                edge_roi = resolved.groupby("edge_bucket", observed=False).agg(
+                    bets=("pnl", "count"),
+                    total_pnl=("pnl", "sum"),
+                    win_rate=("hit", "mean"),
+                ).reset_index()
+                edge_roi["roi"] = (edge_roi["total_pnl"] / (edge_roi["bets"] * 100) * 100).round(1)
+                colors = [GREEN if r >= 0 else RED for r in edge_roi["roi"]]
+                fig_roi = go.Figure(go.Bar(
+                    x=edge_roi["edge_bucket"].astype(str),
+                    y=edge_roi["roi"],
+                    marker_color=colors,
+                    text=edge_roi.apply(lambda r: f"{r['roi']:+.1f}% ({int(r['bets'])})", axis=1),
+                    textposition="outside",
+                ))
+                fig_roi.add_hline(y=0, line_dash="dot", line_color=MUTED)
+                fig_roi.update_layout(
+                    template=PLOTLY_TEMPLATE,
+                    plot_bgcolor=CARD_BG, paper_bgcolor=CARD_BG,
+                    margin=dict(l=0, r=0, t=10, b=0),
+                    xaxis_title="Model Edge", yaxis_title="ROI %",
+                    height=300,
+                )
+                st.plotly_chart(fig_roi, use_container_width=True)
+
+            st.markdown("<hr>", unsafe_allow_html=True)
+
+            # --- P&L by Market and by Sportsbook ---
+            col_m, col_s = st.columns(2)
+
+            with col_m:
+                st.markdown("#### P&L by Market")
+                by_market = resolved.groupby("market_label").agg(
+                    bets=("pnl", "count"),
+                    total_pnl=("pnl", "sum"),
+                    win_rate=("hit", "mean"),
+                ).reset_index()
+                by_market["roi"] = (by_market["total_pnl"] / (by_market["bets"] * 100) * 100).round(1)
+                by_market = by_market.sort_values("total_pnl", ascending=True)
+                colors = [GREEN if p >= 0 else RED for p in by_market["total_pnl"]]
+                fig_mkt = go.Figure(go.Bar(
+                    x=by_market["total_pnl"],
+                    y=by_market["market_label"],
+                    orientation="h",
+                    marker_color=colors,
+                    text=by_market.apply(
+                        lambda r: f"${r['total_pnl']:+,.0f} ({r['win_rate']*100:.0f}% WR, {int(r['bets'])} bets)", axis=1
+                    ),
+                    textposition="outside",
+                ))
+                fig_mkt.add_vline(x=0, line_dash="dot", line_color=MUTED)
+                fig_mkt.update_layout(
+                    template=PLOTLY_TEMPLATE,
+                    plot_bgcolor=CARD_BG, paper_bgcolor=CARD_BG,
+                    margin=dict(l=0, r=80, t=10, b=0),
+                    xaxis_title="Total P&L ($)", yaxis_title="",
+                    height=300,
+                )
+                st.plotly_chart(fig_mkt, use_container_width=True)
+
+            with col_s:
+                st.markdown("#### P&L by Sportsbook")
+                by_book = resolved.groupby("sportsbook").agg(
+                    bets=("pnl", "count"),
+                    total_pnl=("pnl", "sum"),
+                    win_rate=("hit", "mean"),
+                ).reset_index()
+                by_book["roi"] = (by_book["total_pnl"] / (by_book["bets"] * 100) * 100).round(1)
+                by_book = by_book.sort_values("total_pnl", ascending=True)
+                colors = [GREEN if p >= 0 else RED for p in by_book["total_pnl"]]
+                fig_book = go.Figure(go.Bar(
+                    x=by_book["total_pnl"],
+                    y=by_book["sportsbook"],
+                    orientation="h",
+                    marker_color=colors,
+                    text=by_book.apply(
+                        lambda r: f"${r['total_pnl']:+,.0f} (ROI: {r['roi']:+.1f}%, {int(r['bets'])} bets)", axis=1
+                    ),
+                    textposition="outside",
+                ))
+                fig_book.add_vline(x=0, line_dash="dot", line_color=MUTED)
+                fig_book.update_layout(
+                    template=PLOTLY_TEMPLATE,
+                    plot_bgcolor=CARD_BG, paper_bgcolor=CARD_BG,
+                    margin=dict(l=0, r=80, t=10, b=0),
+                    xaxis_title="Total P&L ($)", yaxis_title="",
+                    height=300,
+                )
+                st.plotly_chart(fig_book, use_container_width=True)
+
+            st.markdown("<hr>", unsafe_allow_html=True)
+
+            # --- Biggest Misses (worst losses by edge) ---
+            st.markdown("#### Biggest Misses (Model Overconfidence)")
+            st.markdown(
+                f'<p style="color:{MUTED}; font-size:0.82rem;">'
+                f'Alerts where the model predicted a high edge but the bet lost. '
+                f'These are the most valuable cases for retraining — the model was most wrong here.</p>',
+                unsafe_allow_html=True,
+            )
+            misses = resolved[resolved["hit"] == 0].sort_values(
+                "calculated_edge_percentage", ascending=False
+            ).head(20).copy()
+            if not misses.empty:
+                miss_display = misses[[
+                    "player_name", "market_label", "sportsbook", "odds_formatted",
+                    "calculated_edge_percentage", "model_prob", "implied_prob", "game_date"
+                ]].copy()
+                miss_display["Edge"]       = miss_display["calculated_edge_percentage"].apply(lambda x: f"+{x*100:.1f}%")
+                miss_display["Model Prob"] = miss_display["model_prob"].apply(lambda x: f"{x*100:.1f}%" if pd.notna(x) else "-")
+                miss_display["Implied"]    = miss_display["implied_prob"].apply(lambda x: f"{x*100:.1f}%" if pd.notna(x) else "-")
+                miss_display["Date"]       = miss_display["game_date"].astype(str)
+                miss_display = miss_display.rename(columns={
+                    "player_name": "Player", "market_label": "Market",
+                    "sportsbook": "Book", "odds_formatted": "Odds",
+                })
+                miss_display = miss_display[["Player", "Market", "Book", "Odds", "Edge", "Model Prob", "Implied", "Date"]]
+                st.dataframe(miss_display, use_container_width=True, hide_index=True)
+            else:
+                st.success("No misses yet!")
+
+            st.markdown("<hr>", unsafe_allow_html=True)
+
+            # --- Export for retraining ---
+            st.markdown("#### Export Resolved Alerts for Retraining")
+            st.markdown(
+                f'<p style="color:{MUTED}; font-size:0.82rem;">'
+                f'Download all resolved alerts as CSV. Includes player name, market, odds, '
+                f'model probability, implied probability, edge, and actual outcome (1=hit, 0=miss). '
+                f'Use this to analyze model weaknesses and retrain.</p>',
+                unsafe_allow_html=True,
+            )
+            export = resolved[[
+                "player_name", "market", "sportsbook", "odds_formatted",
+                "calculated_edge_percentage", "model_prob", "implied_prob",
+                "game_date", "actual_outcome"
+            ]].copy()
+            export.columns = [
+                "player_name", "market", "sportsbook", "odds",
+                "edge", "model_prob", "implied_prob",
+                "game_date", "outcome"
+            ]
+            export["outcome"] = export["outcome"].astype(int)
+
+            c1, c2, _ = st.columns([1, 1, 2])
+            with c1:
+                csv_retrain = export.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    "Download Resolved Alerts CSV",
+                    csv_retrain, "blast_resolved_alerts.csv", "text/csv",
+                )
+            with c2:
+                st.markdown(
+                    f'<p style="color:{MUTED}; font-size:0.82rem; margin-top:0.5rem;">'
+                    f'{len(export):,} resolved alerts available</p>',
+                    unsafe_allow_html=True,
+                )
+
+
+# ===========================================================================
+# TAB 5 — DAILY EV SUMMARY
 # ===========================================================================
 with tab_daily:
     if df_raw.empty:
@@ -860,10 +1168,24 @@ with tab_odds:
             f'<p style="color:{MUTED}; font-size:0.8rem;">{len(df_odds):,} rows</p>',
             unsafe_allow_html=True,
         )
-        display_odds = df_odds[[
+
+        # Build base columns
+        cols_to_select = [
             "player_name", "market_label", "market", "sportsbook",
             "odds_american", "implied_prob", "game_date", "fetched_at"
-        ]].copy()
+        ]
+        has_point = "point" in df_odds.columns
+        if has_point:
+            cols_to_select.insert(4, "point")
+        has_model = "model_prob" in df_odds.columns and "edge" in df_odds.columns
+        if has_model:
+            cols_to_select += ["model_prob", "edge"]
+
+        display_odds = df_odds[cols_to_select].copy()
+        if has_point:
+            display_odds["Line"] = display_odds["point"].apply(
+                lambda x: str(x) if pd.notna(x) else "—"
+            )
         display_odds["Type"] = display_odds["market"].apply(
             lambda m: "Game Line" if m in GAME_LINE_KEYS else "Player Prop"
         )
@@ -872,13 +1194,227 @@ with tab_odds:
         )
         display_odds["Odds"] = display_odds["odds_american"].apply(_fmt_odds)
         display_odds["Fetched"] = display_odds["fetched_at"].dt.strftime("%b %d, %H:%M UTC")
+
+        if has_model:
+            display_odds["Model Prob"] = display_odds["model_prob"].apply(
+                lambda x: f"{x*100:.1f}%" if pd.notna(x) else "—"
+            )
+            # Keep numeric edge for proper sorting, format as percentage string
+            display_odds["Edge"] = display_odds["edge"].apply(
+                lambda x: round(x * 100, 1) if pd.notna(x) else None
+            )
+            display_odds = display_odds.sort_values("Edge", ascending=False, na_position="last")
+            display_odds["Edge"] = display_odds["Edge"].apply(
+                lambda x: f"+{x:.1f}%" if pd.notna(x) and x > 0 else (f"{x:.1f}%" if pd.notna(x) else "—")
+            )
+
         display_odds = display_odds.rename(columns={
             "player_name": "Team / Player",
             "market_label": "Market",
             "sportsbook": "Book",
             "game_date": "Game Date",
         })
-        display_odds = display_odds[["Team / Player", "Market", "Type", "Book", "Odds", "Implied Prob", "Game Date", "Fetched"]]
+
+        final_cols = ["Team / Player", "Market"]
+        if has_point:
+            final_cols += ["Line"]
+        final_cols += ["Type", "Book", "Odds", "Implied Prob"]
+        if has_model:
+            final_cols += ["Model Prob", "Edge"]
+        final_cols += ["Game Date", "Fetched"]
+        display_odds = display_odds[final_cols]
+
         st.dataframe(display_odds, use_container_width=True, hide_index=True, height=560)
         csv_odds = df_odds.to_csv(index=False).encode("utf-8")
-        st.download_button("⬇ Export CSV", csv_odds, "blast_odds.csv", "text/csv")
+        st.download_button("⬇ Export CSV", csv_odds, "blast_odds.csv", "text/csv", key="odds_csv")
+
+    # --- Player Insights Section ---
+    st.markdown("<hr>", unsafe_allow_html=True)
+    st.markdown("#### Player Insights")
+    st.markdown(
+        f'<p style="color:{MUTED}; font-size:0.82rem;">'
+        f'Search for a pitcher to see their last 5 games and matchup history. '
+        f'Data comes from pitcher gamelogs stored by the pipeline.</p>',
+        unsafe_allow_html=True,
+    )
+
+    col_pi1, col_pi2 = st.columns([2, 2])
+    with col_pi1:
+        insight_player = st.text_input("Pitcher Name", key="insight_player", placeholder="e.g. Logan Webb")
+    with col_pi2:
+        insight_opp = st.text_input("Filter by Opponent (optional)", key="insight_opp", placeholder="e.g. NYY")
+
+    if insight_player.strip():
+        gl = load_pitcher_gamelogs(insight_player)
+
+        if gl.empty:
+            st.info(f"No game log data found for '{insight_player}'. Pitcher gamelogs are populated each pipeline run.")
+        else:
+            # Apply opponent filter if provided
+            gl_matchup = gl.copy()
+            if insight_opp.strip() and "opp_team" in gl.columns:
+                gl_matchup = gl[gl["opp_team"].str.contains(insight_opp.strip(), case=False, na=False)]
+
+            col_g1, col_g2 = st.columns(2)
+
+            with col_g1:
+                st.markdown("##### Last 5 Games")
+                recent_5 = gl.head(5).copy()
+                if not recent_5.empty:
+                    display_gl = recent_5.rename(columns={
+                        "pitcher_name": "Pitcher",
+                        "game_date": "Date",
+                        "SO": "K",
+                        "HA": "Hits Allowed",
+                        "Outs": "Outs",
+                        "K_pct": "K%",
+                        "opp_team": "Opponent",
+                    })
+                    if "K%" in display_gl.columns:
+                        display_gl["K%"] = display_gl["K%"].apply(
+                            lambda x: f"{float(x)*100:.1f}%" if pd.notna(x) else "—"
+                        )
+                    show_cols = [c for c in ["Pitcher", "Date", "Opponent", "K", "Hits Allowed", "Outs", "K%"] if c in display_gl.columns]
+                    st.dataframe(display_gl[show_cols], use_container_width=True, hide_index=True)
+
+                    # Summary stats
+                    avg_k = recent_5["SO"].mean() if "SO" in recent_5.columns else 0
+                    avg_outs = recent_5["Outs"].mean() if "Outs" in recent_5.columns else 0
+                    avg_ha = recent_5["HA"].mean() if "HA" in recent_5.columns else 0
+                    st.markdown(
+                        f'<p style="color:{MUTED}; font-size:0.82rem;">'
+                        f'5-game averages: <b style="color:{TEAL}">{avg_k:.1f} K</b> · '
+                        f'<b style="color:{TEAL}">{avg_outs:.1f} Outs</b> · '
+                        f'<b style="color:{TEAL}">{avg_ha:.1f} HA</b></p>',
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.info("No recent games found.")
+
+            with col_g2:
+                if insight_opp.strip():
+                    st.markdown(f"##### Matchups vs {insight_opp.strip().upper()}")
+                else:
+                    st.markdown("##### Matchup History")
+                    st.markdown(
+                        f'<p style="color:{MUTED}; font-size:0.82rem;">'
+                        f'Enter an opponent abbreviation above to filter.</p>',
+                        unsafe_allow_html=True,
+                    )
+
+                if not gl_matchup.empty:
+                    matchup_display = gl_matchup.head(5).rename(columns={
+                        "pitcher_name": "Pitcher",
+                        "game_date": "Date",
+                        "SO": "K",
+                        "HA": "Hits Allowed",
+                        "Outs": "Outs",
+                        "K_pct": "K%",
+                        "opp_team": "Opponent",
+                    }).copy()
+                    if "K%" in matchup_display.columns:
+                        matchup_display["K%"] = matchup_display["K%"].apply(
+                            lambda x: f"{float(x)*100:.1f}%" if pd.notna(x) else "—"
+                        )
+                    show_cols = [c for c in ["Pitcher", "Date", "Opponent", "K", "Hits Allowed", "Outs", "K%"] if c in matchup_display.columns]
+                    st.dataframe(matchup_display[show_cols], use_container_width=True, hide_index=True)
+
+                    if insight_opp.strip() and len(gl_matchup) > 0:
+                        avg_k = gl_matchup["SO"].mean() if "SO" in gl_matchup.columns else 0
+                        avg_outs = gl_matchup["Outs"].mean() if "Outs" in gl_matchup.columns else 0
+                        avg_ha = gl_matchup["HA"].mean() if "HA" in gl_matchup.columns else 0
+                        st.markdown(
+                            f'<p style="color:{MUTED}; font-size:0.82rem;">'
+                            f'vs {insight_opp.strip().upper()} averages ({len(gl_matchup)} starts): '
+                            f'<b style="color:{TEAL}">{avg_k:.1f} K</b> · '
+                            f'<b style="color:{TEAL}">{avg_outs:.1f} Outs</b> · '
+                            f'<b style="color:{TEAL}">{avg_ha:.1f} HA</b></p>',
+                            unsafe_allow_html=True,
+                        )
+                elif insight_opp.strip():
+                    st.info(f"No matchups found vs '{insight_opp}'.")
+
+# ===========================================================================
+# TAB 6 — LINE MOVEMENTS
+# ===========================================================================
+with tab_movements:
+    st.markdown("#### Line Movements")
+    st.markdown(
+        f'<p style="color:{MUTED}; font-size:0.82rem;">'
+        f'Tracks when Bovada or Kalshi odds shift by ≥1% implied probability between pipeline runs. '
+        f'Negative shift = book raised the implied probability (line got harder to beat).</p>',
+        unsafe_allow_html=True,
+    )
+
+    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+    with col_m1:
+        mv_books = ["All", "bovada", "kalshi"]
+        sel_mv_book = st.selectbox("Sportsbook", mv_books, key="mv_book")
+    with col_m2:
+        mv_market_opts = ["All"] + [v for v in MARKET_LABELS.values() if "Moneyline" not in v and "Run Line" not in v and "Total Runs" not in v]
+        sel_mv_market = st.selectbox("Market", mv_market_opts, key="mv_market")
+    with col_m3:
+        sel_mv_player = st.text_input("Player (partial match)", key="mv_player")
+    with col_m4:
+        sel_mv_min = st.slider("Min prob shift (%)", min_value=1, max_value=20, value=1, key="mv_min")
+
+    df_mv = load_line_movements(sel_mv_book, sel_mv_market, sel_mv_player, sel_mv_min / 100)
+
+    if df_mv.empty:
+        st.info(
+            "No line movements detected yet. Movements are logged each time `run_mlb_pipeline.py` runs "
+            "and finds odds that changed since the previous run.\n\n"
+            "**First-time setup:** run `migrate_add_line_movements.sql` in your Supabase SQL Editor."
+        )
+    else:
+        def _fmt_odds(val):
+            if pd.isna(val): return "—"
+            return f"+{int(val)}" if val > 0 else str(int(val))
+
+        def _fmt_shift(val):
+            if pd.isna(val): return "—"
+            pct = float(val) * 100
+            sign = "▲" if pct > 0 else "▼"
+            color = RED if pct > 0 else GREEN
+            return f"{sign} {abs(pct):.1f}%"
+
+        st.markdown(
+            f'<p style="color:{MUTED}; font-size:0.8rem;">{len(df_mv):,} movements</p>',
+            unsafe_allow_html=True,
+        )
+
+        display_mv = df_mv.copy()
+        display_mv["Old Odds"]  = display_mv["old_odds"].apply(_fmt_odds)
+        display_mv["New Odds"]  = display_mv["new_odds"].apply(_fmt_odds)
+        display_mv["Old Prob"]  = display_mv["old_implied_prob"].apply(lambda x: f"{float(x)*100:.1f}%" if pd.notna(x) else "—")
+        display_mv["New Prob"]  = display_mv["new_implied_prob"].apply(lambda x: f"{float(x)*100:.1f}%" if pd.notna(x) else "—")
+        display_mv["Shift"]     = display_mv["prob_shift"].apply(_fmt_shift)
+        display_mv["Detected"]  = display_mv["detected_at"].dt.strftime("%b %d, %H:%M UTC")
+        display_mv = display_mv.rename(columns={
+            "player_name":  "Player",
+            "market_label": "Market",
+            "sportsbook":   "Book",
+            "game_date":    "Game Date",
+        })
+        display_mv = display_mv[["Player", "Market", "Book", "Game Date", "Old Odds", "New Odds", "Old Prob", "New Prob", "Shift", "Detected"]]
+        st.dataframe(display_mv, use_container_width=True, hide_index=True, height=560)
+
+        # Prob shift distribution chart
+        fig_mv = px.histogram(
+            df_mv, x=df_mv["prob_shift"] * 100,
+            nbins=40,
+            labels={"x": "Probability Shift (%)"},
+            title="Distribution of Line Movements",
+            template=PLOTLY_TEMPLATE,
+            color_discrete_sequence=[TEAL],
+        )
+        fig_mv.update_layout(
+            paper_bgcolor=CARD_BG, plot_bgcolor=CARD_BG,
+            font_color=TEXT, showlegend=False,
+            margin=dict(t=40, b=20, l=0, r=0),
+            height=300,
+        )
+        st.plotly_chart(fig_mv, use_container_width=True)
+
+        csv_mv = df_mv.to_csv(index=False).encode("utf-8")
+        st.download_button("⬇ Export CSV", csv_mv, "blast_line_movements.csv", "text/csv")

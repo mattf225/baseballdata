@@ -10,6 +10,8 @@ import ev_calculator
 from db_client import DatabaseClient
 from notifier import DiscordNotifier
 from gamelog_updater import run_gamelog_update
+from bovada_client import fetch_bovada_props
+from kalshi_client import fetch_kalshi_props
 
 # Configure structured logging
 log_dir = os.path.join(os.path.dirname(__file__), "logs")
@@ -67,9 +69,14 @@ def main():
     gamelog_count = run_gamelog_update()
     logger.info(f"Pitcher gamelog update complete: {gamelog_count} rows upserted.")
 
-    # Step 1: Fetch live odds first — short-circuit if no events today
-    logger.info("Fetching live odds from The Odds API...")
-    events = ingestor.fetch_player_props_odds()
+    # Step 1: Fetch live odds — Bovada + Kalshi only
+    logger.info("Fetching live odds from Bovada...")
+    events = fetch_bovada_props()
+
+    logger.info("Fetching live odds from Kalshi...")
+    kalshi_events = fetch_kalshi_props()
+    events = events + kalshi_events
+
     if not events:
         logger.info("No events found. Exiting pipeline.")
         return
@@ -115,6 +122,10 @@ def main():
     # Step 3: Archive all odds to mlb_odds_log before processing
     fetched_at = datetime.now(timezone.utc).isoformat()
     odds_archive = []
+    supported_markets = [
+        'batter_home_runs', 'batter_hits', 'batter_total_bases_1.5', 'batter_strikeouts',
+        'pitcher_strikeouts', 'pitcher_outs', 'pitcher_hits_allowed', 'pitcher_walks_allowed'
+    ]
     for event in events:
         if 'bookmakers' not in event:
             continue
@@ -126,6 +137,26 @@ def main():
             for market in bookmaker['markets']:
                 for outcome in market['outcomes']:
                     if abs(outcome['price']) <= 50000:
+                        implied = round(ev_calculator.calculate_implied_prob(outcome['price']), 6)
+
+                        # Compute model probability for supported markets
+                        ml_market = market['key']
+                        if ml_market == 'batter_total_bases':
+                            ml_market = 'batter_total_bases_1.5'
+
+                        model_prob = None
+                        edge = None
+                        if ml_market in supported_markets:
+                            tp = ev_calculator.generate_true_prob(
+                                ml_market, outcome['name'], batter_stats_df, pitcher_stats_df,
+                                team_batting_df=team_batting_df,
+                                home_team=home_team, away_team=away_team,
+                                pitcher_gamelogs_cache=pitcher_gamelogs_cache,
+                            )
+                            if tp is not None:
+                                model_prob = round(tp, 6)
+                                edge = round(tp - implied, 6)
+
                         odds_archive.append({
                             "event_id":      event['id'],
                             "game_date":     game_date,
@@ -137,11 +168,45 @@ def main():
                             "sportsbook":    bookmaker['key'],
                             "odds_american": int(outcome['price']),
                             "point":         outcome.get('point'),
-                            "implied_prob":  round(ev_calculator.calculate_implied_prob(outcome['price']), 6),
+                            "implied_prob":  implied,
+                            "model_prob":    model_prob,
+                            "edge":          edge,
                             "fetched_at":    fetched_at,
                         })
+    # Fetch previous snapshot BEFORE writing new one (to detect movements)
+    today_str = datetime.now(timezone.utc).date().isoformat()
+    previous_snapshot = db.get_latest_odds_snapshot(today_str)
+
     db.log_odds_batch(odds_archive)
     logger.info(f"Archived {len(odds_archive):,} odds snapshots to mlb_odds_log.")
+
+    # Step 3.5: Detect and log line movements
+    if previous_snapshot:
+        movements = []
+        MIN_PROB_SHIFT = 0.01  # ignore sub-1% noise
+        for row in odds_archive:
+            key = (row["player_name"], row["market"], row["sportsbook"])
+            prev = previous_snapshot.get(key)
+            if not prev:
+                continue
+            if prev["odds_american"] == row["odds_american"]:
+                continue
+            prob_shift = round(float(row["implied_prob"]) - float(prev["implied_prob"]), 4)
+            if abs(prob_shift) < MIN_PROB_SHIFT:
+                continue
+            movements.append({
+                "player_name":      row["player_name"],
+                "market":           row["market"],
+                "sportsbook":       row["sportsbook"],
+                "game_date":        row["game_date"],
+                "old_odds":         prev["odds_american"],
+                "new_odds":         row["odds_american"],
+                "old_implied_prob": float(prev["implied_prob"]),
+                "new_implied_prob": float(row["implied_prob"]),
+                "prob_shift":       prob_shift,
+            })
+        db.log_line_movements_batch(movements)
+        logger.info(f"Line movement detection: {len(movements)} movements logged.")
 
     # For every event (game)
     for event in events:
@@ -164,6 +229,10 @@ def main():
                         logger.warning(f"Skipping suspicious odds for {player_name}: {odds_american}")
                         continue
 
+                    # Skip heavily juiced Kalshi lines (-185 and beyond) and extreme longshots (+9900)
+                    if book_name == "kalshi" and (odds_american <= -185 or odds_american >= 9900):
+                        continue
+
                     # Calculate Implied Probability
                     implied_prob = ev_calculator.calculate_implied_prob(odds_american)
 
@@ -171,11 +240,6 @@ def main():
                     ml_market = market_name
                     if market_name == 'batter_total_bases':
                         ml_market = 'batter_total_bases_1.5'
-
-                    supported_markets = [
-                        'batter_home_runs', 'batter_hits', 'batter_total_bases_1.5', 'batter_strikeouts',
-                        'pitcher_strikeouts', 'pitcher_outs', 'pitcher_hits_allowed', 'pitcher_walks_allowed'
-                    ]
 
                     if ml_market not in supported_markets:
                         continue
@@ -207,7 +271,7 @@ def main():
                                 odds_american, implied_prob, true_prob, edge
                             )
                             if success:
-                                db.log_alert(player_name, market_name, book_name, str(odds_american), edge)
+                                db.log_alert(player_name, market_name, book_name, str(odds_american), edge, point=outcome.get('point'))
                         else:
                             logger.info(f"Skipped: {player_name} already alerted in past 12 hrs.")
 

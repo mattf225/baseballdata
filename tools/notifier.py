@@ -20,8 +20,15 @@ MARKET_DISPLAY = {
 class DiscordNotifier:
     def __init__(self):
         self.webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
+        self.webhook_url_kalshi = os.environ.get("DISCORD_WEBHOOK_URL_KALSHI")
         if not self.webhook_url:
             raise ValueError("DISCORD_WEBHOOK_URL is missing in .env")
+
+    def _get_webhook_for_book(self, sportsbook: str) -> str:
+        """Returns the appropriate Discord webhook URL for a given sportsbook."""
+        if sportsbook == "kalshi" and self.webhook_url_kalshi:
+            return self.webhook_url_kalshi
+        return self.webhook_url
 
     def send_mlb_alert(self, player_name, market, sportsbook, odds, implied_prob, true_prob, edge):
         """Builds and sends the analytical Discord Embed for a +EV MLB bet."""
@@ -69,7 +76,8 @@ class DiscordNotifier:
         }
 
         try:
-            response = requests.post(self.webhook_url, json=payload, timeout=10)
+            webhook = self._get_webhook_for_book(sportsbook)
+            response = requests.post(webhook, json=payload, timeout=10)
             response.raise_for_status()
             print(f"Successfully fired Discord Alert for {player_name}")
             return True

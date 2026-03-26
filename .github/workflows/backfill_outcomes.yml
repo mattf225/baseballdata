@@ -1,14 +1,13 @@
-name: B.L.A.S.T. MLB EV Automation
+name: B.L.A.S.T. Daily Outcome Backfill
 
 on:
   schedule:
-    # Runs every 1 hour for 15 hours during active MLB hours (e.g. from 12pm to 2am EST)
-    # Note: Cron is in UTC time. Running 15 times per day to stay within API limits.
-    - cron: '0 16-23,0-6 * 4-10 *'
+    # Runs daily at 12:00 UTC (8am ET) — Statcast data from previous day is available by then
+    - cron: '0 12 * 4-10 *'
   workflow_dispatch: # Allows manual triggering from the GitHub Actions UI
 
 jobs:
-  run-ev-bot:
+  backfill:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -24,12 +23,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Execute MLB Pipeline
+      - name: Backfill Outcomes from Statcast
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          DISCORD_WEBHOOK_URL_KALSHI: ${{ secrets.DISCORD_WEBHOOK_URL_KALSHI }}
-          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
-        run: python run_mlb_pipeline.py
+        run: python dashboard/backfill_outcomes.py

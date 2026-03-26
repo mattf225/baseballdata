@@ -78,6 +78,7 @@ def train_market_model(df, feature_cols, target_col, market_name, data_source: s
     meta_path = os.path.join(MODELS_DIR, f"{market_name}_metadata.json")
     with open(meta_path, "w") as f:
         json.dump(metadata, f, indent=2)
+    print(f"Saved metadata to {meta_path}")
 
 
 def main():

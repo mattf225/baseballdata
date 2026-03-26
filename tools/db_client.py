@@ -15,15 +15,17 @@ class DatabaseClient:
             raise ValueError("SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY missing in .env")
         self.supabase: Client = create_client(url, key)
 
-    def log_alert(self, player_name, market, sportsbook, odds_formatted, edge):
+    def log_alert(self, player_name, market, sportsbook, odds_formatted, edge, point=None):
         """Logs a sent alert to the mlb_alert_log table."""
         data = {
             "player_name": player_name,
             "market": market,
             "sportsbook": sportsbook,
             "odds_formatted": odds_formatted,
-            "calculated_edge_percentage": float(edge)
+            "calculated_edge_percentage": float(edge),
         }
+        if point is not None:
+            data["point"] = float(point)
         try:
             self.supabase.table("mlb_alert_log").insert(data).execute()
         except Exception as e:
@@ -83,12 +85,50 @@ class DatabaseClient:
             print(f"Warning: failed to fetch pitcher gamelogs for {pitcher_name}: {e}")
             return pd.DataFrame()
 
+    def get_latest_odds_snapshot(self, game_date: str) -> dict:
+        """
+        Returns the most recent odds for each (player_name, market, sportsbook)
+        for a given game_date as a dict keyed by (player_name, market, sportsbook).
+        Used to detect line movements by comparing against current odds.
+        """
+        try:
+            response = (
+                self.supabase.table("mlb_odds_log")
+                .select("player_name, market, sportsbook, odds_american, implied_prob, fetched_at")
+                .eq("game_date", game_date)
+                .order("fetched_at", desc=True)
+                .limit(5000)
+                .execute()
+            )
+            snapshot = {}
+            for row in response.data:
+                key = (row["player_name"], row["market"], row["sportsbook"])
+                if key not in snapshot:  # first = most recent (sorted desc)
+                    snapshot[key] = row
+            return snapshot
+        except Exception as e:
+            print(f"Warning: failed to fetch odds snapshot: {e}")
+            return {}
+
+    def log_line_movements_batch(self, rows: list) -> None:
+        """
+        Bulk-inserts detected line movements into mlb_line_movements.
+        Silently skips on error so movement logging never blocks the pipeline.
+        """
+        if not rows:
+            return
+        try:
+            for i in range(0, len(rows), 500):
+                self.supabase.table("mlb_line_movements").insert(rows[i:i + 500]).execute()
+        except Exception as e:
+            print(f"Warning: failed to log line movements: {e}")
+
     def is_spam(self, player_name, market, sportsbook) -> bool:
         """
         Checks if an identical alert (player + market + sportsbook) was sent
-        within the last 12 hours. Uses a server-side time filter for accuracy.
+        today (same game date). Only fires once per player+market+sportsbook per day.
         """
-        cutoff = (datetime.now(timezone.utc) - timedelta(hours=12)).isoformat()
+        today = datetime.now(timezone.utc).date().isoformat()
         try:
             response = (
                 self.supabase.table("mlb_alert_log")
@@ -96,7 +136,7 @@ class DatabaseClient:
                 .eq("player_name", player_name)
                 .eq("market", market)
                 .eq("sportsbook", sportsbook)
-                .gte("sent_at", cutoff)
+                .gte("sent_at", today)
                 .limit(1)
                 .execute()
             )

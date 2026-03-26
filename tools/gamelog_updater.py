@@ -126,17 +126,39 @@ def build_pitcher_gamelogs(df: pd.DataFrame, game_date: str) -> list:
         game_logs['opp_k_pct'] = None
 
     # Merge pitcher name from Statcast
-    if 'pitcher_name' in df_ev.columns:
-        names = df_ev[['pitcher', 'pitcher_name']].drop_duplicates('pitcher')
+    # pybaseball statcast() uses 'player_name'; older builds may use 'pitcher_name'
+    name_col = next((c for c in ['player_name', 'pitcher_name'] if c in df_ev.columns), None)
+    if name_col:
+        names = df_ev[['pitcher', name_col]].rename(columns={name_col: 'pitcher_name'}).drop_duplicates('pitcher')
     else:
         names = df_ev[['pitcher']].assign(pitcher_name=None).drop_duplicates('pitcher')
     game_logs = game_logs.merge(names, on='pitcher', how='left')
 
+    # For any rows still missing a name, resolve via playerid_reverse_lookup
+    missing_mask = game_logs['pitcher_name'].isna()
+    if missing_mask.any():
+        missing_ids = game_logs.loc[missing_mask, 'pitcher'].astype(int).tolist()
+        try:
+            lookup = pybaseball.playerid_reverse_lookup(missing_ids, key_type='mlbam')
+            id_to_name = {
+                int(r['key_mlbam']): f"{r['name_first']} {r['name_last']}".strip()
+                for _, r in lookup.iterrows()
+            }
+            game_logs.loc[missing_mask, 'pitcher_name'] = (
+                game_logs.loc[missing_mask, 'pitcher'].astype(int).map(id_to_name)
+            )
+        except Exception as e:
+            print(f"  Warning: playerid_reverse_lookup failed: {e}")
+
+    # Drop rows we still can't name (rare: unknown pitcher ID)
+    game_logs = game_logs[game_logs['pitcher_name'].notna()].copy()
+    if game_logs.empty:
+        return []
+
     # Build upsert rows
     rows = []
     for _, row in game_logs.iterrows():
-        raw_name = row.get('pitcher_name') or str(row['pitcher'])
-        norm_name = _normalize_name(str(raw_name))
+        norm_name = _normalize_name(str(row['pitcher_name']))
 
         opp_team = row.get('opp_team')
         opp_k_pct = row.get('opp_k_pct')
