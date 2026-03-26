@@ -327,6 +327,16 @@ def load_line_movements(sportsbook: str = "All", market: str = "All", player: st
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=600)
+def load_todays_schedule() -> list:
+    """Fetches today's MLB schedule with probable pitchers via MLB Stats API."""
+    try:
+        from mlb_schedule import get_todays_games
+        return get_todays_games()
+    except Exception:
+        return []
+
+
 @st.cache_data(ttl=300)
 def load_pitcher_names() -> list:
     """Returns sorted list of unique pitcher names from gamelogs for autocomplete."""
@@ -1362,20 +1372,6 @@ with tab_insights:
         unsafe_allow_html=True,
     )
 
-    # Full name → abbreviation mapping for resolving today's opponent
-    _TEAM_ABBREV = {
-        "Arizona Diamondbacks": "ARI", "Atlanta Braves": "ATL", "Baltimore Orioles": "BAL",
-        "Boston Red Sox": "BOS", "Chicago Cubs": "CHC", "Chicago White Sox": "CWS",
-        "Cincinnati Reds": "CIN", "Cleveland Guardians": "CLE", "Colorado Rockies": "COL",
-        "Detroit Tigers": "DET", "Houston Astros": "HOU", "Kansas City Royals": "KC",
-        "Los Angeles Angels": "LAA", "Los Angeles Dodgers": "LAD", "Miami Marlins": "MIA",
-        "Milwaukee Brewers": "MIL", "Minnesota Twins": "MIN", "New York Mets": "NYM",
-        "New York Yankees": "NYY", "Oakland Athletics": "OAK", "Athletics": "OAK",
-        "Las Vegas Athletics": "OAK", "Philadelphia Phillies": "PHI", "Pittsburgh Pirates": "PIT",
-        "San Diego Padres": "SD", "San Francisco Giants": "SF", "Seattle Mariners": "SEA",
-        "St. Louis Cardinals": "STL", "Tampa Bay Rays": "TB", "Texas Rangers": "TEX",
-        "Toronto Blue Jays": "TOR", "Washington Nationals": "WSH",
-    }
     MLB_TEAMS = [
         "", "ARI", "ATL", "BAL", "BOS", "CHC", "CWS", "CIN", "CLE", "COL",
         "DET", "HOU", "KC", "LAA", "LAD", "MIA", "MIL", "MIN", "NYM", "NYY",
@@ -1392,39 +1388,27 @@ with tab_insights:
             format_func=lambda x: "Type to search..." if x == "" else x,
         )
 
-    # Auto-detect today's opponent from odds data
+    # Auto-detect today's opponent via MLB Stats API schedule
     todays_opp = ""
     if insight_player.strip():
         pi_name = insight_player.strip()
+        # Convert "last, first" → "first last" for matching
         if "," in pi_name:
             _parts = pi_name.split(",", 1)
-            _pi_search = f"{_parts[1].strip()} {_parts[0].strip()}"
+            pi_display = f"{_parts[1].strip()} {_parts[0].strip()}"
         else:
-            _pi_search = pi_name
-        _pi_odds = load_odds(player=_pi_search)
-        if not _pi_odds.empty:
-            _pi_odds = _pi_odds[_pi_odds["market"].str.startswith("pitcher_")]
-            if not _pi_odds.empty:
-                _latest = _pi_odds.sort_values("fetched_at", ascending=False).iloc[0]
-                home_abbr = _TEAM_ABBREV.get(_latest.get("home_team"), "")
-                away_abbr = _TEAM_ABBREV.get(_latest.get("away_team"), "")
-                # Determine pitcher's own team: it never appears as opp_team in gamelogs
-                gl_check = load_pitcher_gamelogs(insight_player)
-                if not gl_check.empty and "opp_team" in gl_check.columns:
-                    all_opps = set(gl_check["opp_team"].dropna().str.upper().unique())
-                    all_teams = {home_abbr, away_abbr} - {""}
-                    # Pitcher's team = the one that NEVER appears as an opponent
-                    pitcher_team_candidates = all_teams - all_opps
-                    if len(pitcher_team_candidates) == 1:
-                        pitcher_team = pitcher_team_candidates.pop()
-                        todays_opp = (all_teams - {pitcher_team}).pop() if len(all_teams) > 1 else ""
-                    elif home_abbr and away_abbr:
-                        # Both teams appeared as opponents (rare edge case) — use opposing_pitcher col
-                        opp_pitcher = _latest.get("opposing_pitcher")
-                        if opp_pitcher:
-                            # If there's an opposing pitcher, the pitcher IS on one side
-                            # Just pick the away team as opponent if pitcher is likely home
-                            todays_opp = away_abbr
+            pi_display = pi_name
+
+        games = load_todays_schedule()
+        for g in games:
+            hp = (g.get("home_pitcher") or "").lower()
+            ap = (g.get("away_pitcher") or "").lower()
+            if pi_display.lower() == hp:
+                todays_opp = g.get("away_abbrev", "")
+                break
+            elif pi_display.lower() == ap:
+                todays_opp = g.get("home_abbrev", "")
+                break
 
     # Auto-set opponent in session state when pitcher changes
     if todays_opp and st.session_state.get("_last_insight_player") != insight_player:
