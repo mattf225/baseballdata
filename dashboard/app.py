@@ -1543,18 +1543,18 @@ with tab_insights:
         "OAK", "PHI", "PIT", "SD", "SEA", "SF", "STL", "TB", "TEX", "TOR", "WSH",
     ]
 
-    # Read current pitcher from session state BEFORE rendering widgets
-    # so we can set the opponent dropdown value before its selectbox is created.
+    # on_change fires before the script reruns — the only reliable way to
+    # set a sibling widget's session_state key in Streamlit.
+    def _auto_set_opponent():
+        pitcher = st.session_state.get("insight_player", "")
+        if pitcher:
+            opp = _find_todays_opponent(pitcher)
+            if opp and opp in MLB_TEAMS:
+                st.session_state["insight_opp"] = opp
+
+    # Keep todays_opp for the label only (read current session state)
     current_pitcher = st.session_state.get("insight_player", "")
     todays_opp = _find_todays_opponent(current_pitcher) if current_pitcher else ""
-
-    # If pitcher changed, auto-set opponent dropdown
-    if current_pitcher and st.session_state.get("_prev_pitcher") != current_pitcher:
-        st.session_state["_prev_pitcher"] = current_pitcher
-        if todays_opp and todays_opp in MLB_TEAMS:
-            st.session_state["insight_opp"] = todays_opp
-    elif not current_pitcher:
-        st.session_state["_prev_pitcher"] = ""
 
     col_pi1, col_pi2 = st.columns([2, 2])
     with col_pi1:
@@ -1564,6 +1564,7 @@ with tab_insights:
             options=pitcher_names,
             key="insight_player",
             format_func=lambda x: "Type to search..." if x == "" else x,
+            on_change=_auto_set_opponent,
         )
     with col_pi2:
         insight_opp = st.selectbox(
