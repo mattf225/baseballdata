@@ -12,7 +12,7 @@ from notifier import DiscordNotifier
 from gamelog_updater import run_gamelog_update
 from bovada_client import fetch_bovada_props
 from kalshi_client import fetch_kalshi_props
-from mlb_schedule import get_todays_games, build_matchup_map
+from mlb_schedule import get_todays_games, build_matchup_map, get_probable_starters
 
 # Configure structured logging
 log_dir = os.path.join(os.path.dirname(__file__), "logs")
@@ -86,11 +86,18 @@ def main():
     logger.info("Fetching MLB schedule for player matchup data...")
     mlb_games = get_todays_games()
     matchup_map = {}
+    probable_starters_norm = set()
     if mlb_games:
         matchup_map = build_matchup_map(mlb_games)
         logger.info(f"Matchup map built: {len(matchup_map)} players mapped to opposing pitchers.")
+        probable_starters = get_probable_starters(mlb_games)
+        probable_starters_norm = {ev_calculator._normalize_name(s) for s in probable_starters}
+        if probable_starters_norm:
+            logger.info(f"Pitcher lineup filter active: {len(probable_starters_norm)} confirmed starters today.")
+        else:
+            logger.warning("No confirmed starters found yet — pitcher lineup filter disabled.")
     else:
-        logger.warning("No MLB games found today — matchup data unavailable.")
+        logger.warning("No MLB games found today — matchup data and pitcher lineup filter unavailable.")
 
     # Step 2: Fetch stats only after confirming there are events to process
     logger.info("Fetching global batter stats from Statcast...")
@@ -282,6 +289,13 @@ def main():
 
                     if ml_market not in supported_markets:
                         continue
+
+                    # Skip pitcher alerts when player isn't a confirmed starter today.
+                    # Only enforced when schedule fetch succeeded (probable_starters_norm non-empty).
+                    if ml_market.startswith('pitcher_') and probable_starters_norm:
+                        if ev_calculator._normalize_name(player_name) not in probable_starters_norm:
+                            logger.debug(f"Skipping {player_name} ({ml_market}) — not a confirmed starter today.")
+                            continue
 
                     true_prob = ev_calculator.generate_true_prob(
                         ml_market, player_name, batter_stats_df, pitcher_stats_df,

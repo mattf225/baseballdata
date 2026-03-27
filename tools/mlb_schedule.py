@@ -66,6 +66,20 @@ def get_todays_games(game_date: str = None) -> list:
     return games
 
 
+def get_probable_starters(games: list) -> set:
+    """
+    Returns a set of probable starting pitcher names (lowercase) for today's games.
+    Excludes 'TBD' entries. Returns empty set if no games or all pitchers are TBD.
+    """
+    starters = set()
+    for game in games:
+        for key in ("home_pitcher", "away_pitcher"):
+            name = game.get(key, "TBD")
+            if name and name != "TBD":
+                starters.add(name.lower())
+    return starters
+
+
 def build_matchup_map(games: list) -> dict:
     """
     Builds a mapping of player_name (lowercase) → opposing pitcher name.

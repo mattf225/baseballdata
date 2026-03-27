@@ -17,7 +17,7 @@
 
 ## Backlog
 
-- [ ] **Starting lineup filter** — `mlb_schedule.py` provides rosters, but pipeline doesn't yet skip players not in confirmed starting lineup (~1-2 hrs pre-game)
+- [x] **Starting lineup filter** — pitcher alerts now skipped when player not in MLB Stats API probable starters list (batter lineup filter still pending)
 - [x] **Pitcher BF from Statcast** — `gamelog_updater.py` now stores actual BF per game from Statcast (replaces IP × 3.5 estimate)
 - [x] **Rolling game logs at inference** — Pitcher gamelogs backfilled from Statcast; `ev_calculator.py` uses last-N-game stats via `pitcher_gamelogs_cache`
 - [x] **Batter game logs** — `batter_gamelogs` table + `gamelog_updater.py` stores per-game PA/AB/H/HR/SO/TB; `ev_calculator.py` uses DB-backed rolling-10 features *(completed 2026-03-26)*
