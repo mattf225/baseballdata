@@ -1610,11 +1610,18 @@ with tab_insights:
                 "HH%": "Hard-Hit rate. % of batted balls with exit velo ≥ 95 mph.",
                 "BABIP": "Batting Avg on Balls in Play. Avg ~.300 — lower = lucky, higher = unlucky.",
                 "LOB%": "Left on Base %. Avg ~72% — higher = stranding more runners (lucky).",
+                "IP": "Innings Pitched (Outs / 3, baseball notation: 6.2 = 6⅔ innings)",
             }
 
             def _format_game_table(df_slice):
                 """Format a game log slice for display with pitch stats."""
-                display = df_slice.rename(columns={
+                display = df_slice.copy()
+                # Compute IP from Outs before renaming (baseball notation: 7 outs = 2.1 IP)
+                if "Outs" in display.columns:
+                    display["IP"] = display["Outs"].apply(
+                        lambda x: f"{int(x) // 3}.{int(x) % 3}" if pd.notna(x) else "—"
+                    )
+                display = display.rename(columns={
                     "pitcher_name": "Pitcher", "game_date": "Date",
                     "SO": "K", "HA": "HA", "Outs": "Outs",
                     "K_pct": "K%", "opp_team": "Opp",
@@ -1642,7 +1649,7 @@ with tab_insights:
                         display[int_col] = display[int_col].apply(
                             lambda x: int(x) if pd.notna(x) else "—"
                         )
-                cols = [c for c in ["Date", "Opp", "K", "BB", "HA", "HR", "Outs", "Pit", "K%", "Whf", "CSW%", "FPS%", "Brl", "Avg EV", "HH", "HH%", "BABIP", "LOB%"] if c in display.columns]
+                cols = [c for c in ["Date", "Opp", "K", "BB", "HA", "HR", "Outs", "IP", "Pit", "K%", "Whf", "CSW%", "FPS%", "Brl", "Avg EV", "HH", "HH%", "BABIP", "LOB%"] if c in display.columns]
                 # Build column_config with help tooltips
                 col_config = {}
                 for c in cols:
