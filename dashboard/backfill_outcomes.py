@@ -169,7 +169,7 @@ def resolve_outcome(player_name: str, market: str, batter_log: pd.DataFrame, pit
         return None
 
     mask = log[name_col].apply(lambda n: False if pd.isna(n) else _normalize(str(n)) == norm_target)
-    row = log[mask]
+    row = log[mask.values]
 
     if row.empty:
         return None
