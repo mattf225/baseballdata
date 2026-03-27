@@ -406,6 +406,152 @@ def load_pitcher_gamelogs(player_name: str = "") -> pd.DataFrame:
         return pd.DataFrame()
 
 
+WHIFF_DESCS = {"swinging_strike", "swinging_strike_blocked"}
+CALLED_STRIKE_DESCS = {"called_strike"}
+
+
+@st.cache_data(ttl=3600, show_spinner="Fetching Statcast pitch data...")
+def load_pitcher_statcast(pitcher_name: str) -> pd.DataFrame:
+    """Fetches Statcast pitch-by-pitch data for a pitcher (last ~12 months). Returns raw DataFrame."""
+    import pybaseball
+    pybaseball.cache.enable()
+
+    name = pitcher_name.strip()
+    if "," in name:
+        parts = name.split(",", 1)
+        last_name, first_name = parts[0].strip(), parts[1].strip()
+    else:
+        tokens = name.split()
+        first_name = tokens[0] if tokens else ""
+        last_name = tokens[-1] if len(tokens) > 1 else ""
+
+    try:
+        lookup = pybaseball.playerid_lookup(last_name, first_name, fuzzy=True)
+        if lookup.empty:
+            return pd.DataFrame()
+        player_id = int(lookup.sort_values("key_mlbam", ascending=False).iloc[0]["key_mlbam"])
+    except Exception:
+        return pd.DataFrame()
+
+    end_dt = datetime.now().strftime("%Y-%m-%d")
+    start_dt = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+
+    try:
+        df = pybaseball.statcast_pitcher(start_dt, end_dt, player_id)
+        if df is None or df.empty:
+            return pd.DataFrame()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+def build_per_game_pitch_stats(df: pd.DataFrame) -> pd.DataFrame:
+    """Computes per-game pitch counts, whiffs, CSW%, BB, and 1st-pitch strike % from Statcast."""
+    if df.empty or "game_date" not in df.columns:
+        return pd.DataFrame()
+
+    # Identify first pitches of each at-bat
+    df = df.copy()
+    df["is_first_pitch"] = False
+    if "at_bat_number" in df.columns:
+        first_idx = df.groupby(["game_date", "at_bat_number"])["pitch_number"].idxmin()
+        df.loc[first_idx, "is_first_pitch"] = True
+
+    strike_descs = WHIFF_DESCS | CALLED_STRIKE_DESCS | {"foul", "foul_tip", "hit_into_play"}
+
+    # Flag batted ball events for barrel / hard-hit tracking
+    df["is_batted_ball"] = df["description"] == "hit_into_play"
+    df["is_barrel"] = False
+    if "barrel" in df.columns:
+        df["is_barrel"] = df["barrel"].fillna(0).astype(int) == 1
+    elif "launch_speed" in df.columns and "launch_angle" in df.columns:
+        # Barrel approximation: EV >= 98 mph and launch angle 26-30 (Statcast definition core)
+        df["is_barrel"] = (
+            df["launch_speed"].fillna(0).ge(98)
+            & df["launch_angle"].fillna(0).between(26, 30)
+        )
+    df["is_hard_hit"] = df["launch_speed"].fillna(0).ge(95) if "launch_speed" in df.columns else False
+
+    # BABIP components: hits (excl HR), balls in play
+    hit_events = {"single", "double", "triple"}
+    hr_events = {"home_run"}
+    bip_events = hit_events | hr_events | {"field_out", "force_out", "grounded_into_dp", "double_play", "field_error", "sac_fly"}
+    sf_events = {"sac_fly"}
+
+    df["is_hit_no_hr"] = df["events"].isin(hit_events)
+    df["is_hr"] = df["events"].isin(hr_events)
+    df["is_bip"] = df["events"].isin(bip_events)
+    df["is_sf"] = df["events"].isin(sf_events)
+    df["is_k"] = df["events"].isin({"strikeout", "strikeout_double_play"})
+
+    per_game = df.groupby("game_date").agg(
+        pitches=("pitch_type", "count"),
+        whiffs=("description", lambda x: x.isin(WHIFF_DESCS).sum()),
+        called_strikes=("description", lambda x: x.isin(CALLED_STRIKE_DESCS).sum()),
+        walks=("events", lambda x: (x == "walk").sum()),
+        first_pitches=("is_first_pitch", "sum"),
+        first_pitch_strikes=("is_first_pitch", lambda x: (
+            x & df.loc[x.index, "description"].isin(strike_descs)
+        ).sum()),
+        batted_balls=("is_batted_ball", "sum"),
+        barrels=("is_barrel", "sum"),
+        hard_hits=("is_hard_hit", "sum"),
+        hits_no_hr=("is_hit_no_hr", "sum"),
+        hrs=("is_hr", "sum"),
+        bip=("is_bip", "sum"),
+        sfs=("is_sf", "sum"),
+        ks=("is_k", "sum"),
+    ).reset_index()
+
+    per_game["csw_pct"] = (per_game["whiffs"] + per_game["called_strikes"]) / per_game["pitches"]
+    per_game["fps_pct"] = per_game["first_pitch_strikes"] / per_game["first_pitches"].replace(0, 1)
+    per_game["hard_hit_pct"] = per_game["hard_hits"] / per_game["batted_balls"].replace(0, 1)
+
+    # Average exit velocity on batted balls
+    if "launch_speed" in df.columns:
+        bip_df = df[df["description"] == "hit_into_play"].copy()
+        avg_ev = bip_df.groupby("game_date")["launch_speed"].mean().reset_index()
+        avg_ev.columns = ["game_date", "avg_ev"]
+        per_game = per_game.merge(avg_ev, on="game_date", how="left")
+
+    # BABIP = (H - HR) / (BIP - HR - K + SF)  — only on balls in play
+    babip_denom = per_game["bip"] - per_game["hrs"] - per_game["ks"] + per_game["sfs"]
+    per_game["babip"] = per_game["hits_no_hr"] / babip_denom.replace(0, float("nan"))
+
+    # LOB% = (H + BB + HBP - R) / (H + BB + HBP - 1.4*HR)
+    # Standard formula — R = max(post_bat_score) per game (total runs allowed)
+    events_df = df[df["events"].notna()].copy()
+    lob_rows = []
+    for gd, gdf in events_df.groupby("game_date"):
+        h = gdf["events"].isin(hit_events | hr_events).sum()
+        bb = (gdf["events"] == "walk").sum()
+        hbp = (gdf["events"] == "hit_by_pitch").sum()
+        hr = (gdf["events"] == "home_run").sum()
+        runs = int(gdf["post_bat_score"].max()) if "post_bat_score" in gdf.columns and gdf["post_bat_score"].notna().any() else 0
+        baserunners = h + bb + hbp
+        denom = baserunners - 1.4 * hr
+        if denom > 0 and baserunners > 0:
+            lob_pct = (baserunners - runs) / denom
+            lob_rows.append({"game_date": gd, "lob_pct": max(0, min(1, lob_pct))})
+        else:
+            lob_rows.append({"game_date": gd, "lob_pct": float("nan")})
+
+    if lob_rows:
+        lob_df = pd.DataFrame(lob_rows)
+        lob_df["game_date"] = pd.to_datetime(lob_df["game_date"]).dt.strftime("%Y-%m-%d")
+        per_game["game_date"] = pd.to_datetime(per_game["game_date"]).dt.strftime("%Y-%m-%d")
+        per_game = per_game.merge(lob_df, on="game_date", how="left")
+    else:
+        per_game["game_date"] = pd.to_datetime(per_game["game_date"]).dt.strftime("%Y-%m-%d")
+        per_game["lob_pct"] = float("nan")
+
+    per_game = per_game.drop(columns=[
+        "called_strikes", "first_pitches", "first_pitch_strikes",
+        "batted_balls", "hits_no_hr", "bip", "sfs", "ks",
+    ])
+    return per_game
+
+
 df_raw = load_alerts()
 
 last_refresh = datetime.now(PST).strftime("%b %d %Y, %H:%M PST")
@@ -1397,6 +1543,19 @@ with tab_insights:
         "OAK", "PHI", "PIT", "SD", "SEA", "SF", "STL", "TB", "TEX", "TOR", "WSH",
     ]
 
+    # Read current pitcher from session state BEFORE rendering widgets
+    # so we can set the opponent dropdown value before its selectbox is created.
+    current_pitcher = st.session_state.get("insight_player", "")
+    todays_opp = _find_todays_opponent(current_pitcher) if current_pitcher else ""
+
+    # If pitcher changed, auto-set opponent dropdown
+    if current_pitcher and st.session_state.get("_prev_pitcher") != current_pitcher:
+        st.session_state["_prev_pitcher"] = current_pitcher
+        if todays_opp and todays_opp in MLB_TEAMS:
+            st.session_state["insight_opp"] = todays_opp
+    elif not current_pitcher:
+        st.session_state["_prev_pitcher"] = ""
+
     col_pi1, col_pi2 = st.columns([2, 2])
     with col_pi1:
         pitcher_names = [""] + load_pitcher_names()
@@ -1406,18 +1565,6 @@ with tab_insights:
             key="insight_player",
             format_func=lambda x: "Type to search..." if x == "" else x,
         )
-
-    # Auto-detect today's opponent via MLB Stats API
-    todays_opp = _find_todays_opponent(insight_player) if insight_player.strip() else ""
-
-    # If pitcher changed and we found an opponent, sync the dropdown and rerun
-    if todays_opp and st.session_state.get("_prev_pitcher") != insight_player:
-        st.session_state["_prev_pitcher"] = insight_player
-        st.session_state["insight_opp"] = todays_opp
-        st.rerun()
-    elif not insight_player.strip():
-        st.session_state["_prev_pitcher"] = ""
-
     with col_pi2:
         insight_opp = st.selectbox(
             "Filter by Opponent" + (f" (today: vs {todays_opp})" if todays_opp else " (optional)"),
@@ -1432,89 +1579,128 @@ with tab_insights:
         if gl.empty:
             st.info(f"No game log data found for '{insight_player}'. Pitcher gamelogs are populated each pipeline run.")
         else:
+            # Fetch Statcast pitch data and merge per-game stats into gamelogs
+            statcast_df = load_pitcher_statcast(insight_player)
+            per_game_stats = build_per_game_pitch_stats(statcast_df) if not statcast_df.empty else pd.DataFrame()
+
+            if not per_game_stats.empty and "game_date" in gl.columns:
+                gl = gl.merge(per_game_stats, on="game_date", how="left")
+
             # Apply opponent filter if provided
             gl_matchup = gl.copy()
             if insight_opp.strip() and "opp_team" in gl.columns:
                 gl_matchup = gl[gl["opp_team"].str.contains(insight_opp.strip(), case=False, na=False)]
 
-            col_g1, col_g2 = st.columns(2)
+            _COL_TOOLTIPS = {
+                "Date": "Game date",
+                "Opp": "Opposing team",
+                "K": "Strikeouts",
+                "BB": "Walks allowed",
+                "HA": "Hits allowed",
+                "Outs": "Outs recorded",
+                "Pit": "Total pitches thrown",
+                "K%": "Strikeout rate (K / batters faced)",
+                "Whf": "Whiffs (swinging strikes)",
+                "CSW%": "Called Strikes + Whiffs / total pitches. Measures raw stuff quality.",
+                "FPS%": "First Pitch Strike %. Pitchers ahead in counts K more and go deeper.",
+                "HR": "Home runs allowed",
+                "Brl": "Barrels allowed (Statcast barrel = optimal EV + launch angle combo)",
+                "Avg EV": "Average exit velocity (mph) on batted balls. League avg ~88 mph.",
+                "HH": "Hard-hit balls allowed (exit velo ≥ 95 mph)",
+                "HH%": "Hard-Hit rate. % of batted balls with exit velo ≥ 95 mph.",
+                "BABIP": "Batting Avg on Balls in Play. Avg ~.300 — lower = lucky, higher = unlucky.",
+                "LOB%": "Left on Base %. Avg ~72% — higher = stranding more runners (lucky).",
+            }
 
-            with col_g1:
-                st.markdown("##### Last 5 Games")
-                recent_5 = gl.head(5).copy()
-                if not recent_5.empty:
-                    display_gl = recent_5.rename(columns={
-                        "pitcher_name": "Pitcher",
-                        "game_date": "Date",
-                        "SO": "K",
-                        "HA": "Hits Allowed",
-                        "Outs": "Outs",
-                        "K_pct": "K%",
-                        "opp_team": "Opponent",
-                    })
-                    if "K%" in display_gl.columns:
-                        display_gl["K%"] = display_gl["K%"].apply(
+            def _format_game_table(df_slice):
+                """Format a game log slice for display with pitch stats."""
+                display = df_slice.rename(columns={
+                    "pitcher_name": "Pitcher", "game_date": "Date",
+                    "SO": "K", "HA": "HA", "Outs": "Outs",
+                    "K_pct": "K%", "opp_team": "Opp",
+                    "pitches": "Pit", "whiffs": "Whf", "csw_pct": "CSW%",
+                    "walks": "BB", "fps_pct": "FPS%",
+                    "barrels": "Brl", "hard_hits": "HH", "hard_hit_pct": "HH%",
+                    "babip": "BABIP", "lob_pct": "LOB%",
+                    "hrs": "HR", "avg_ev": "Avg EV",
+                })
+                for pct_col in ["K%", "CSW%", "FPS%", "HH%", "LOB%"]:
+                    if pct_col in display.columns:
+                        display[pct_col] = display[pct_col].apply(
                             lambda x: f"{float(x)*100:.1f}%" if pd.notna(x) else "—"
                         )
-                    show_cols = [c for c in ["Pitcher", "Date", "Opponent", "K", "Hits Allowed", "Outs", "K%"] if c in display_gl.columns]
-                    st.dataframe(display_gl[show_cols], use_container_width=True, hide_index=True)
+                if "BABIP" in display.columns:
+                    display["BABIP"] = display["BABIP"].apply(
+                        lambda x: f".{int(float(x)*1000):03d}" if pd.notna(x) else "—"
+                    )
+                if "Avg EV" in display.columns:
+                    display["Avg EV"] = display["Avg EV"].apply(
+                        lambda x: f"{float(x):.1f}" if pd.notna(x) else "—"
+                    )
+                for int_col in ["Whf", "Pit", "BB", "Brl", "HR", "HH"]:
+                    if int_col in display.columns:
+                        display[int_col] = display[int_col].apply(
+                            lambda x: int(x) if pd.notna(x) else "—"
+                        )
+                cols = [c for c in ["Date", "Opp", "K", "BB", "HA", "HR", "Outs", "Pit", "K%", "Whf", "CSW%", "FPS%", "Brl", "Avg EV", "HH", "HH%", "BABIP", "LOB%"] if c in display.columns]
+                # Build column_config with help tooltips
+                col_config = {}
+                for c in cols:
+                    if c in _COL_TOOLTIPS:
+                        col_config[c] = st.column_config.TextColumn(c, help=_COL_TOOLTIPS[c])
+                return display[cols], col_config
 
-                    # Summary stats
-                    avg_k = recent_5["SO"].mean() if "SO" in recent_5.columns else 0
-                    avg_outs = recent_5["Outs"].mean() if "Outs" in recent_5.columns else 0
-                    avg_ha = recent_5["HA"].mean() if "HA" in recent_5.columns else 0
+            # --- Last 5 Games ---
+            st.markdown("##### Last 5 Games")
+            recent_5 = gl.head(5).copy()
+            if not recent_5.empty:
+                _r5_df, _r5_cfg = _format_game_table(recent_5)
+                st.dataframe(_r5_df, use_container_width=True, hide_index=True, column_config=_r5_cfg)
+
+                avg_k = recent_5["SO"].mean() if "SO" in recent_5.columns else 0
+                avg_outs = recent_5["Outs"].mean() if "Outs" in recent_5.columns else 0
+                avg_ha = recent_5["HA"].mean() if "HA" in recent_5.columns else 0
+                avg_csw = recent_5["csw_pct"].mean() if "csw_pct" in recent_5.columns and recent_5["csw_pct"].notna().any() else None
+                summary = (
+                    f'5-game averages: <b style="color:{TEAL}">{avg_k:.1f} K</b> · '
+                    f'<b style="color:{TEAL}">{avg_outs:.1f} Outs</b> · '
+                    f'<b style="color:{TEAL}">{avg_ha:.1f} HA</b>'
+                )
+                if avg_csw is not None:
+                    summary += f' · <b style="color:{TEAL}">{avg_csw*100:.1f}% CSW</b>'
+                st.markdown(f'<p style="color:{MUTED}; font-size:0.82rem;">{summary}</p>', unsafe_allow_html=True)
+            else:
+                st.info("No recent games found.")
+
+            # --- Matchup History ---
+            if insight_opp.strip():
+                st.markdown(f"##### Matchups vs {insight_opp.strip().upper()}")
+            else:
+                st.markdown("##### Matchup History")
+                st.markdown(
+                    f'<p style="color:{MUTED}; font-size:0.82rem;">'
+                    f'Select an opponent above to filter.</p>',
+                    unsafe_allow_html=True,
+                )
+
+            if not gl_matchup.empty:
+                _mu_df, _mu_cfg = _format_game_table(gl_matchup.head(5))
+                st.dataframe(_mu_df, use_container_width=True, hide_index=True, column_config=_mu_cfg)
+
+                if insight_opp.strip() and len(gl_matchup) > 0:
+                    avg_k = gl_matchup["SO"].mean() if "SO" in gl_matchup.columns else 0
+                    avg_outs = gl_matchup["Outs"].mean() if "Outs" in gl_matchup.columns else 0
+                    avg_ha = gl_matchup["HA"].mean() if "HA" in gl_matchup.columns else 0
                     st.markdown(
                         f'<p style="color:{MUTED}; font-size:0.82rem;">'
-                        f'5-game averages: <b style="color:{TEAL}">{avg_k:.1f} K</b> · '
+                        f'vs {insight_opp.strip().upper()} averages ({len(gl_matchup)} starts): '
+                        f'<b style="color:{TEAL}">{avg_k:.1f} K</b> · '
                         f'<b style="color:{TEAL}">{avg_outs:.1f} Outs</b> · '
                         f'<b style="color:{TEAL}">{avg_ha:.1f} HA</b></p>',
                         unsafe_allow_html=True,
                     )
-                else:
-                    st.info("No recent games found.")
-
-            with col_g2:
-                if insight_opp.strip():
-                    st.markdown(f"##### Matchups vs {insight_opp.strip().upper()}")
-                else:
-                    st.markdown("##### Matchup History")
-                    st.markdown(
-                        f'<p style="color:{MUTED}; font-size:0.82rem;">'
-                        f'Select an opponent above to filter.</p>',
-                        unsafe_allow_html=True,
-                    )
-
-                if not gl_matchup.empty:
-                    matchup_display = gl_matchup.head(5).rename(columns={
-                        "pitcher_name": "Pitcher",
-                        "game_date": "Date",
-                        "SO": "K",
-                        "HA": "Hits Allowed",
-                        "Outs": "Outs",
-                        "K_pct": "K%",
-                        "opp_team": "Opponent",
-                    }).copy()
-                    if "K%" in matchup_display.columns:
-                        matchup_display["K%"] = matchup_display["K%"].apply(
-                            lambda x: f"{float(x)*100:.1f}%" if pd.notna(x) else "—"
-                        )
-                    show_cols = [c for c in ["Pitcher", "Date", "Opponent", "K", "Hits Allowed", "Outs", "K%"] if c in matchup_display.columns]
-                    st.dataframe(matchup_display[show_cols], use_container_width=True, hide_index=True)
-
-                    if insight_opp.strip() and len(gl_matchup) > 0:
-                        avg_k = gl_matchup["SO"].mean() if "SO" in gl_matchup.columns else 0
-                        avg_outs = gl_matchup["Outs"].mean() if "Outs" in gl_matchup.columns else 0
-                        avg_ha = gl_matchup["HA"].mean() if "HA" in gl_matchup.columns else 0
-                        st.markdown(
-                            f'<p style="color:{MUTED}; font-size:0.82rem;">'
-                            f'vs {insight_opp.strip().upper()} averages ({len(gl_matchup)} starts): '
-                            f'<b style="color:{TEAL}">{avg_k:.1f} K</b> · '
-                            f'<b style="color:{TEAL}">{avg_outs:.1f} Outs</b> · '
-                            f'<b style="color:{TEAL}">{avg_ha:.1f} HA</b></p>',
-                            unsafe_allow_html=True,
-                        )
-                elif insight_opp.strip():
-                    st.info(f"No matchups found vs '{insight_opp}'.")
+            elif insight_opp.strip():
+                st.info(f"No matchups found vs '{insight_opp}'.")
 
             # --- Current Pitcher Prop Odds ---
             st.markdown("<hr>", unsafe_allow_html=True)
