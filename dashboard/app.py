@@ -1563,6 +1563,11 @@ with tab_insights:
                 st.session_state["insight_opp"] = g.get("home_abbrev", "")
                 return
 
+    # DEBUG — remove after confirming fix
+    _debug_games = load_todays_schedule()
+    _debug_pitcher = st.session_state.get("insight_player", "")
+    st.caption(f"DEBUG: schedule={len(_debug_games)} games | insight_player={_debug_pitcher!r} | insight_opp={st.session_state.get('insight_opp', '')!r}")
+
     col_pi1, col_pi2 = st.columns([2, 2])
     with col_pi1:
         pitcher_names = [""] + load_pitcher_names()
