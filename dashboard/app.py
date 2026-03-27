@@ -1546,6 +1546,7 @@ with tab_insights:
     def _on_pitcher_change():
         """Callback: auto-set opponent when pitcher selection changes."""
         selected = st.session_state.get("insight_player", "")
+        st.session_state["_dbg_cb"] = f"called with {selected!r}"
         if not selected.strip():
             return
         name = selected.strip()
@@ -1553,20 +1554,27 @@ with tab_insights:
             p = name.split(",", 1)
             name = f"{p[1].strip()} {p[0].strip()}"
         games = load_todays_schedule()
+        st.session_state["_dbg_cb"] += f" | {len(games)} games | name={name!r}"
         for g in games:
             hp = (g.get("home_pitcher") or "").lower()
             ap = (g.get("away_pitcher") or "").lower()
             if name.lower() == hp:
                 st.session_state["insight_opp"] = g.get("away_abbrev", "")
+                st.session_state["_dbg_cb"] += f" | matched home→{g.get('away_abbrev')}"
                 return
             elif name.lower() == ap:
                 st.session_state["insight_opp"] = g.get("home_abbrev", "")
+                st.session_state["_dbg_cb"] += f" | matched away→{g.get('home_abbrev')}"
                 return
+        st.session_state["_dbg_cb"] += " | NO MATCH"
 
     # DEBUG — remove after confirming fix
     _debug_games = load_todays_schedule()
     _debug_pitcher = st.session_state.get("insight_player", "")
     st.caption(f"DEBUG: schedule={len(_debug_games)} games | insight_player={_debug_pitcher!r} | insight_opp={st.session_state.get('insight_opp', '')!r}")
+    st.caption(f"DEBUG cb: {st.session_state.get('_dbg_cb', 'never called')}")
+    _pitchers_in_schedule = [(g.get('away_pitcher',''), g.get('home_pitcher','')) for g in _debug_games]
+    st.caption(f"DEBUG pitchers: {_pitchers_in_schedule}")
 
     col_pi1, col_pi2 = st.columns([2, 2])
     with col_pi1:
