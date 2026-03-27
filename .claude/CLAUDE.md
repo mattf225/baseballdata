@@ -184,6 +184,7 @@ Run these SQL migrations in the Supabase SQL Editor:
 | `dashboard/migrate_add_alert_point.sql` | `mlb_alert_log` | Adds `point` (line) column |
 | `dashboard/migrate_add_movement_points.sql` | `mlb_line_movements` | Adds `old_point` and `new_point` columns |
 | `dashboard/migrate_add_opposing_pitcher.sql` | `mlb_odds_log` | Adds `opposing_pitcher` column |
+| `dashboard/migrate_add_batter_gamelogs.sql` | `batter_gamelogs` | Per-game batter stats (PA, AB, H, HR, SO, TB) |
 
 **Important:** Pitcher gamelogs columns must use quoted uppercase names (`"BF"`, `"SO"`, `"HA"`, `"Outs"`, `"BBA"`, `"K_pct"`).
 
@@ -247,6 +248,4 @@ Fetches Statcast for each alert's game date, evaluates the actual result:
 ## Known Limitations / Future Work
 
 1. **Starting lineup filter** — `mlb_schedule.py` now provides player→team mapping via MLB Stats API rosters, but pipeline does not yet *skip* players not in the confirmed starting lineup (lineups post ~1-2 hrs before game time).
-2. **Pitcher BF approximation** — `rolling_5_BF` is estimated from IP (`ip * 3.5`). Replace with actual per-game Statcast logs when possible.
-3. **Batter game logs** — Dashboard player insights only supports pitcher gamelogs. Batter game log storage not yet implemented.
-4. **Kalshi rate limiting** — Kalshi API returns 429 errors on rapid requests. Could add retry/backoff logic.
+2. **Kalshi rate limiting** — Kalshi API returns 429 errors on rapid requests. Could add retry/backoff logic.

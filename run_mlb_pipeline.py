@@ -130,6 +130,25 @@ def main():
                 pitcher_gamelogs_cache[norm] = df
         logger.info(f"Pitcher gamelog cache loaded: {len(pitcher_gamelogs_cache)} pitchers with DB history.")
 
+    # Bulk-fetch batter gamelogs for all batters with odds today
+    batter_names_in_odds = set()
+    for event in events:
+        for bookmaker in event.get('bookmakers', []):
+            for market in bookmaker['markets']:
+                if market['key'].startswith('batter'):
+                    for outcome in market['outcomes']:
+                        batter_names_in_odds.add(outcome['name'])
+
+    batter_gamelogs_cache = {}
+    if batter_names_in_odds:
+        logger.info(f"Fetching batter gamelogs for {len(batter_names_in_odds)} batters...")
+        for bname in batter_names_in_odds:
+            norm = ev_calculator._normalize_name(bname)
+            df = db.get_batter_recent_games(norm, n=15)
+            if not df.empty:
+                batter_gamelogs_cache[norm] = df
+        logger.info(f"Batter gamelog cache loaded: {len(batter_gamelogs_cache)} batters with DB history.")
+
     # Step 3: Archive all odds to mlb_odds_log before processing
     fetched_at = datetime.now(timezone.utc).isoformat()
     odds_archive = []
@@ -163,6 +182,7 @@ def main():
                                 team_batting_df=team_batting_df,
                                 home_team=home_team, away_team=away_team,
                                 pitcher_gamelogs_cache=pitcher_gamelogs_cache,
+                                batter_gamelogs_cache=batter_gamelogs_cache,
                             )
                             if tp is not None:
                                 model_prob = round(tp, 6)
@@ -269,6 +289,7 @@ def main():
                         home_team=event.get('home_team'),
                         away_team=event.get('away_team'),
                         pitcher_gamelogs_cache=pitcher_gamelogs_cache,
+                        batter_gamelogs_cache=batter_gamelogs_cache,
                     )
 
                     # Skip if model couldn't find the player

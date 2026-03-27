@@ -1543,6 +1543,19 @@ with tab_insights:
         "OAK", "PHI", "PIT", "SD", "SEA", "SF", "STL", "TB", "TEX", "TOR", "WSH",
     ]
 
+    # Read current pitcher from session state BEFORE rendering widgets
+    # so we can set the opponent dropdown value before its selectbox is created.
+    current_pitcher = st.session_state.get("insight_player", "")
+    todays_opp = _find_todays_opponent(current_pitcher) if current_pitcher else ""
+
+    # If pitcher changed, auto-set opponent dropdown
+    if current_pitcher and st.session_state.get("_prev_pitcher") != current_pitcher:
+        st.session_state["_prev_pitcher"] = current_pitcher
+        if todays_opp and todays_opp in MLB_TEAMS:
+            st.session_state["insight_opp"] = todays_opp
+    elif not current_pitcher:
+        st.session_state["_prev_pitcher"] = ""
+
     col_pi1, col_pi2 = st.columns([2, 2])
     with col_pi1:
         pitcher_names = [""] + load_pitcher_names()
@@ -1552,18 +1565,6 @@ with tab_insights:
             key="insight_player",
             format_func=lambda x: "Type to search..." if x == "" else x,
         )
-
-    # Auto-detect today's opponent via MLB Stats API
-    todays_opp = _find_todays_opponent(insight_player) if insight_player.strip() else ""
-
-    # If pitcher changed and we found an opponent, sync the dropdown and rerun
-    if todays_opp and st.session_state.get("_prev_pitcher") != insight_player:
-        st.session_state["_prev_pitcher"] = insight_player
-        st.session_state["insight_opp"] = todays_opp
-        st.rerun()
-    elif not insight_player.strip():
-        st.session_state["_prev_pitcher"] = ""
-
     with col_pi2:
         insight_opp = st.selectbox(
             "Filter by Opponent" + (f" (today: vs {todays_opp})" if todays_opp else " (optional)"),

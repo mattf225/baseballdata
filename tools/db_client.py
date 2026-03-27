@@ -85,6 +85,43 @@ class DatabaseClient:
             print(f"Warning: failed to fetch pitcher gamelogs for {pitcher_name}: {e}")
             return pd.DataFrame()
 
+    def upsert_batter_gamelogs(self, rows: list) -> None:
+        """
+        Bulk-upserts batter gamelogs into batter_gamelogs table.
+        On conflict (batter_name, game_date), updates.
+        """
+        if not rows:
+            return
+        try:
+            for i in range(0, len(rows), 500):
+                self.supabase.table("batter_gamelogs").upsert(
+                    rows[i:i + 500], on_conflict="batter_name,game_date"
+                ).execute()
+        except Exception as e:
+            print(f"Warning: failed to upsert batter gamelogs: {e}")
+
+    def get_batter_recent_games(self, batter_name: str, n: int = 15) -> pd.DataFrame:
+        """
+        Returns the last n games for a batter as a DataFrame.
+        Columns: game_date, PA, AB, H, HR, SO, TB
+        Returns empty DataFrame on error or if batter not found.
+        """
+        try:
+            response = (
+                self.supabase.table("batter_gamelogs")
+                .select("game_date, PA, AB, H, HR, SO, TB")
+                .eq("batter_name", batter_name)
+                .order("game_date", desc=True)
+                .limit(n)
+                .execute()
+            )
+            if response.data:
+                return pd.DataFrame(response.data)
+            return pd.DataFrame()
+        except Exception as e:
+            print(f"Warning: failed to fetch batter gamelogs for {batter_name}: {e}")
+            return pd.DataFrame()
+
     def get_latest_odds_snapshot(self, game_date: str) -> dict:
         """
         Returns the most recent odds for each (player_name, market, sportsbook)

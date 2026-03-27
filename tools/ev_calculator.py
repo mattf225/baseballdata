@@ -21,8 +21,9 @@ EXPECTED_MARKETS = [
 # 2024 MLB league-average batter K% used as fallback when opponent team is unknown
 _LEAGUE_AVG_OPP_K_PCT = 0.224
 
-# Minimum DB starts required before switching from season-aggregate to DB-backed features
-MIN_STARTS_FOR_DB_FEATURES = 3
+# Minimum DB entries required before switching from season-aggregate to DB-backed features
+MIN_STARTS_FOR_DB_FEATURES = 3   # pitcher starts
+MIN_GAMES_FOR_DB_FEATURES  = 5   # batter games
 
 # Maps Odds API full team names → FanGraphs/pybaseball team abbreviations
 MLB_TEAM_ABBREV = {
@@ -226,9 +227,27 @@ def _features_from_gamelogs(recent_df: pd.DataFrame) -> dict:
     }
 
 
+def _batter_features_from_gamelogs(recent_df: pd.DataFrame) -> dict:
+    """
+    Converts a DataFrame of recent batter games (from batter_gamelogs) into
+    the 6-feature dict expected by batter ML models.
+    Features are rolling-10 means matching build_dataset.py training logic.
+    """
+    df = recent_df.sort_values('game_date').reset_index(drop=True)
+
+    return {
+        'rolling_10_PA': _windowed_mean(df['PA'].tolist(), 10),
+        'rolling_10_AB': _windowed_mean(df['AB'].tolist(), 10),
+        'rolling_10_H':  _windowed_mean(df['H'].tolist(),  10),
+        'rolling_10_HR': _windowed_mean(df['HR'].tolist(), 10),
+        'rolling_10_SO': _windowed_mean(df['SO'].tolist(), 10),
+        'rolling_10_TB': _windowed_mean(df['TB'].tolist(), 10),
+    }
+
+
 def generate_true_prob(market_name, player_name, batter_df, pitcher_df=None,
                        team_batting_df=None, home_team=None, away_team=None,
-                       pitcher_gamelogs_cache=None):
+                       pitcher_gamelogs_cache=None, batter_gamelogs_cache=None):
     """
     Uses calibrated Random Forest ML models to output the true probability
     for a given sportsbook market and player.
@@ -236,8 +255,8 @@ def generate_true_prob(market_name, player_name, batter_df, pitcher_df=None,
 
     For pitcher markets, pass team_batting_df + home_team + away_team to enable
     opponent K% feature (otherwise falls back to league average).
-    Pass pitcher_gamelogs_cache (dict keyed by normalized name → DataFrame of recent starts)
-    to use true DB-backed rolling features instead of season-aggregate approximations.
+    Pass pitcher_gamelogs_cache / batter_gamelogs_cache (dicts keyed by normalized
+    name → DataFrame of recent games) for DB-backed rolling features.
     """
     models = _load_models()
 
@@ -250,20 +269,30 @@ def generate_true_prob(market_name, player_name, batter_df, pitcher_df=None,
     # BATTER PIPELINE INFERENCE
     # ---------------------------------------------------------
     if market_name.startswith('batter'):
-        games_played = _get_rolling_stat(player_name, batter_df, 'G')
-        if games_played is None:
-            return None  # Player not found
-        if games_played == 0:
-            games_played = 1
+        # Try DB-backed rolling features first
+        norm_name = _normalize_name(player_name)
+        recent_df = None
+        if batter_gamelogs_cache is not None:
+            recent_df = batter_gamelogs_cache.get(norm_name)
 
-        live_features = {
-            'rolling_10_PA': _get_rolling_stat(player_name, batter_df, 'PA') / games_played * 10,
-            'rolling_10_AB': _get_rolling_stat(player_name, batter_df, 'AB') / games_played * 10,
-            'rolling_10_H':  _get_rolling_stat(player_name, batter_df, 'H')  / games_played * 10,
-            'rolling_10_HR': _get_rolling_stat(player_name, batter_df, 'HR') / games_played * 10,
-            'rolling_10_SO': _get_rolling_stat(player_name, batter_df, 'SO') / games_played * 10,
-            'rolling_10_TB': _get_rolling_stat(player_name, batter_df, 'TB') / games_played * 10,
-        }
+        if recent_df is not None and len(recent_df) >= MIN_GAMES_FOR_DB_FEATURES:
+            live_features = _batter_features_from_gamelogs(recent_df)
+        else:
+            # Fallback: season-aggregate approximation (per-game means)
+            games_played = _get_rolling_stat(player_name, batter_df, 'G')
+            if games_played is None:
+                return None  # Player not found
+            if games_played == 0:
+                games_played = 1
+
+            live_features = {
+                'rolling_10_PA': _get_rolling_stat(player_name, batter_df, 'PA') / games_played,
+                'rolling_10_AB': _get_rolling_stat(player_name, batter_df, 'AB') / games_played,
+                'rolling_10_H':  _get_rolling_stat(player_name, batter_df, 'H')  / games_played,
+                'rolling_10_HR': _get_rolling_stat(player_name, batter_df, 'HR') / games_played,
+                'rolling_10_SO': _get_rolling_stat(player_name, batter_df, 'SO') / games_played,
+                'rolling_10_TB': _get_rolling_stat(player_name, batter_df, 'TB') / games_played,
+            }
 
     # ---------------------------------------------------------
     # PITCHER PIPELINE INFERENCE
