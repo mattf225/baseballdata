@@ -194,7 +194,14 @@ def load_alerts() -> pd.DataFrame:
 
     df = pd.DataFrame(response.data)
     df["sent_at"] = pd.to_datetime(df["sent_at"], utc=True)
-    df["game_date"] = df["sent_at"].dt.date
+    # Use real game_date column if available; fall back to sent_at for legacy rows
+    if "game_date" in df.columns and df["game_date"].notna().any():
+        df["game_date"] = pd.to_datetime(df["game_date"]).dt.date
+        # Backfill rows that predate the migration
+        mask = df["game_date"].isna()
+        df.loc[mask, "game_date"] = df.loc[mask, "sent_at"].dt.date
+    else:
+        df["game_date"] = df["sent_at"].dt.date
     df["market_label"] = df["market"].map(MARKET_LABELS).fillna(df["market"])
     # All pipeline alerts are Over bets — prefix with "O" for display
     df["market_display"] = "O " + df["market_label"]
@@ -701,7 +708,7 @@ with tab_history:
         hist_cols = [
             "player_name", "market_display", "sportsbook", "odds_formatted",
             "calculated_edge_percentage", "model_prob", "implied_prob",
-            "game_date", "actual_outcome"
+            "game_date", "sent_at", "actual_outcome"
         ]
         has_point = "point" in filtered.columns
         if has_point:
@@ -715,7 +722,8 @@ with tab_history:
         display["Model Prob"]   = display["model_prob"].apply(lambda x: f"{x*100:.1f}%" if pd.notna(x) else "—")
         display["Implied Prob"] = display["implied_prob"].apply(lambda x: f"{x*100:.1f}%" if pd.notna(x) else "—")
         display["Outcome"]      = display["actual_outcome"].apply(outcome_badge)
-        display["Date"]         = display["game_date"].astype(str)
+        display["Game Date"]    = display["game_date"].astype(str)
+        display["Alert Time"]   = to_pst(display["sent_at"])
 
         display = display.rename(columns={
             "player_name": "Player", "market_display": "Market",
@@ -724,7 +732,7 @@ with tab_history:
         final_hist_cols = ["Player", "Market"]
         if has_point:
             final_hist_cols += ["Line"]
-        final_hist_cols += ["Sportsbook", "Odds", "Edge", "Model Prob", "Implied Prob", "Date", "Outcome"]
+        final_hist_cols += ["Sportsbook", "Odds", "Edge", "Model Prob", "Implied Prob", "Game Date", "Alert Time", "Outcome"]
         display = display[final_hist_cols]
 
         st.dataframe(display, use_container_width=True, hide_index=True, height=520)

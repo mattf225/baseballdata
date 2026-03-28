@@ -325,7 +325,8 @@ def main():
                                 odds_american, implied_prob, true_prob, edge
                             )
                             if success:
-                                db.log_alert(player_name, market_name, book_name, str(odds_american), edge, point=outcome.get('point'))
+                                today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                                db.log_alert(player_name, market_name, book_name, str(odds_american), edge, point=outcome.get('point'), game_date=today)
                         else:
                             logger.info(f"Skipped: {player_name} already alerted in past 12 hrs.")
 
