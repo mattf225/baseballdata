@@ -190,7 +190,7 @@ def main():
     print("Fetching unresolved alerts from Supabase...")
     response = (
         supabase.table("mlb_alert_log")
-        .select("id, player_name, market, sent_at")
+        .select("id, player_name, market, sent_at, game_date")
         .is_("actual_outcome", "null")
         .execute()
     )
@@ -202,16 +202,19 @@ def main():
     print(f"Found {len(alerts)} unresolved alerts.")
 
     # Group alerts by game date.
-    # Alerts sent between midnight–8am UTC belong to the previous calendar day's games
-    # (pipeline runs overnight after games finish). Convert sent_at to PST to get game date.
+    # Use the explicit game_date column if available; fall back to sent_at in PST for legacy rows.
     from datetime import timedelta, timezone as tz
     PST_OFFSET = timedelta(hours=8)  # UTC-8 (PST)
 
     alerts_by_date: dict[str, list] = {}
     for alert in alerts:
-        sent_utc = pd.to_datetime(alert["sent_at"], utc=True).to_pydatetime()
-        sent_pst = sent_utc - PST_OFFSET
-        game_date = sent_pst.date().isoformat()
+        gd = alert.get("game_date")
+        if gd:
+            game_date = str(gd)[:10]  # "YYYY-MM-DD"
+        else:
+            sent_utc = pd.to_datetime(alert["sent_at"], utc=True).to_pydatetime()
+            sent_pst = sent_utc - PST_OFFSET
+            game_date = sent_pst.date().isoformat()
         alerts_by_date.setdefault(game_date, []).append(alert)
 
     total_resolved = 0
@@ -230,8 +233,10 @@ def main():
             print(f"  No Statcast data for {game_date}, skipping.")
             continue
 
+        print(f"  Statcast rows: {len(statcast_df)}")
         batter_log  = build_batter_game_log(statcast_df)
         pitcher_log = build_pitcher_game_log(statcast_df)
+        print(f"  Batters found: {len(batter_log)} | Pitchers found: {len(pitcher_log)}")
 
         for alert in day_alerts:
             alert_id    = alert["id"]
