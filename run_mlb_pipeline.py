@@ -183,7 +183,7 @@ def main():
 
                         model_prob = None
                         edge = None
-                        if ml_market in supported_markets:
+                        if ml_market in supported_markets and ev_calculator.is_supported_line(ml_market, outcome.get('point')):
                             tp = ev_calculator.generate_true_prob(
                                 ml_market, outcome['name'], batter_stats_df, pitcher_stats_df,
                                 team_batting_df=team_batting_df,
@@ -288,6 +288,11 @@ def main():
                         ml_market = 'batter_total_bases_1.5'
 
                     if ml_market not in supported_markets:
+                        continue
+
+                    # Skip props where the sportsbook line doesn't match the model's trained threshold.
+                    if not ev_calculator.is_supported_line(ml_market, outcome.get('point')):
+                        logger.debug(f"Skipping {player_name} ({ml_market} @ {outcome.get('point')}) — line mismatch with trained threshold.")
                         continue
 
                     # Skip pitcher alerts when player isn't a confirmed starter today.

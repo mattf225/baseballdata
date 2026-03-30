@@ -61,6 +61,35 @@ MLB_TEAM_ABBREV = {
     "Washington Nationals": "WSH",
 }
 
+# Trained line (prop threshold) for each market model.
+# Models are classifiers for a specific line — do not score props with different lines.
+# Source: model/trained_models/*_metadata.json "target" field.
+MARKET_CONFIG = {
+    'pitcher_strikeouts':     {'trained_line': 4.5},
+    'pitcher_outs':           {'trained_line': 15.5},
+    'pitcher_hits_allowed':   {'trained_line': 4.5},
+    'pitcher_walks_allowed':  {'trained_line': 1.5},
+    'batter_hits':            {'trained_line': 0.5},
+    'batter_home_runs':       {'trained_line': 0.5},
+    'batter_total_bases_1.5': {'trained_line': 1.5},
+    'batter_strikeouts':      {'trained_line': 0.5},
+}
+
+
+def is_supported_line(market_name: str, point) -> bool:
+    """
+    Returns True only when the sportsbook prop line matches the threshold
+    the model was trained on. Avoids applying a 4.5 K classifier to a 6.5 K line.
+    Always returns True when point is None (line unknown — don't silently block).
+    """
+    if point is None:
+        return True
+    cfg = MARKET_CONFIG.get(market_name)
+    if cfg is None:
+        return True
+    return float(point) == cfg['trained_line']
+
+
 # Lazy-load models on first use
 _models = None
 
@@ -331,17 +360,19 @@ def generate_true_prob(market_name, player_name, batter_df, pitcher_df=None,
 
             k_pct = so_per_game / bf_per_game if bf_per_game > 0 else 0.0
 
+            # Training uses rolling.mean() — all features are per-game averages.
+            # Do NOT multiply by window size; that would produce values 3-10x too large.
             live_features = {
-                'rolling_5_BF':     bf_per_game * 5,
-                'rolling_3_SO':     so_per_game * 3,
-                'rolling_5_SO':     so_per_game * 5,
-                'rolling_10_SO':    so_per_game * 10,
+                'rolling_5_BF':     bf_per_game,
+                'rolling_3_SO':     so_per_game,
+                'rolling_5_SO':     so_per_game,
+                'rolling_10_SO':    so_per_game,
                 'rolling_3_K_pct':  k_pct,
                 'rolling_5_K_pct':  k_pct,
                 'rolling_10_K_pct': k_pct,
-                'rolling_5_BBA':    bb_per_game * 5,
-                'rolling_5_HA':     h_per_game * 5,
-                'rolling_5_Outs':   outs_per_game * 5,
+                'rolling_5_BBA':    bb_per_game,
+                'rolling_5_HA':     h_per_game,
+                'rolling_5_Outs':   outs_per_game,
                 'opp_k_pct':        live_opp_k_pct,
             }
 
