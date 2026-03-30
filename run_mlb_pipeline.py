@@ -316,7 +316,13 @@ def main():
 
                     if ev_result['is_ev']:
                         edge = ev_result['edge']
-                        logger.info(f"+EV Found! {player_name} | {ml_market} | {odds_american} (Edge: {edge*100:.1f}%)")
+                        projection = ev_calculator.get_player_projection(
+                            ml_market, player_name, batter_stats_df, pitcher_stats_df,
+                            pitcher_gamelogs_cache=pitcher_gamelogs_cache,
+                            batter_gamelogs_cache=batter_gamelogs_cache,
+                        )
+                        proj_str = f" | Proj: {projection}" if projection else ""
+                        logger.info(f"+EV Found! {player_name} | {ml_market} | {odds_american} (Edge: {edge*100:.1f}%{proj_str})")
 
                         # Anti-spam db check
                         if not db.is_spam(player_name, market_name, book_name):
@@ -326,7 +332,7 @@ def main():
                             )
                             if success:
                                 today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                                db.log_alert(player_name, market_name, book_name, str(odds_american), edge, point=outcome.get('point'), game_date=today)
+                                db.log_alert(player_name, market_name, book_name, str(odds_american), edge, point=outcome.get('point'), game_date=today, projection=projection)
                         else:
                             logger.info(f"Skipped: {player_name} already alerted in past 12 hrs.")
 

@@ -713,11 +713,16 @@ with tab_history:
         has_point = "point" in filtered.columns
         if has_point:
             hist_cols.insert(3, "point")
+        has_proj = "projection" in filtered.columns and filtered["projection"].notna().any()
+        if has_proj:
+            hist_cols.append("projection")
 
         display = filtered[hist_cols].copy()
 
         if has_point:
             display["Line"] = display["point"].apply(lambda x: str(x) if pd.notna(x) else "—")
+        if has_proj:
+            display["Proj"] = display["projection"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "—")
         display["Edge"]         = display["calculated_edge_percentage"].apply(lambda x: f"+{x*100:.1f}%")
         display["Model Prob"]   = display["model_prob"].apply(lambda x: f"{x*100:.1f}%" if pd.notna(x) else "—")
         display["Implied Prob"] = display["implied_prob"].apply(lambda x: f"{x*100:.1f}%" if pd.notna(x) else "—")
@@ -732,6 +737,8 @@ with tab_history:
         final_hist_cols = ["Player", "Market"]
         if has_point:
             final_hist_cols += ["Line"]
+        if has_proj:
+            final_hist_cols += ["Proj"]
         final_hist_cols += ["Sportsbook", "Odds", "Edge", "Model Prob", "Implied Prob", "Game Date", "Alert Time", "Outcome"]
         display = display[final_hist_cols]
 

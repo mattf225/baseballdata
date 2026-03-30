@@ -355,6 +355,67 @@ def generate_true_prob(market_name, player_name, batter_df, pitcher_df=None,
     return float(true_prob)
 
 
+# Maps market → (gamelog column, season stats column, rolling window)
+_MARKET_PROJECTION_MAP = {
+    'pitcher_strikeouts':    ('SO',   'SO', 5),
+    'pitcher_outs':          ('Outs', 'IP', 5),   # IP * 3 = Outs for season fallback
+    'pitcher_hits_allowed':  ('HA',   'H',  5),
+    'pitcher_walks_allowed': ('BBA',  'BB', 5),
+    'batter_hits':           ('H',    'H',  10),
+    'batter_home_runs':      ('HR',   'HR', 10),
+    'batter_total_bases_1.5':('TB',   'TB', 10),
+    'batter_strikeouts':     ('SO',   'SO', 10),
+}
+
+
+def get_player_projection(market_name, player_name, batter_df=None, pitcher_df=None,
+                          pitcher_gamelogs_cache=None, batter_gamelogs_cache=None):
+    """
+    Returns the projected per-game stat value for a player/market.
+    Uses DB-backed gamelogs (rolling window) when available, else season averages.
+    """
+    if market_name not in _MARKET_PROJECTION_MAP:
+        return None
+
+    gl_col, season_col, window = _MARKET_PROJECTION_MAP[market_name]
+    norm_name = _normalize_name(player_name)
+
+    if market_name.startswith('pitcher'):
+        # Try DB-backed gamelogs first
+        if pitcher_gamelogs_cache:
+            recent_df = pitcher_gamelogs_cache.get(norm_name)
+            if recent_df is not None and len(recent_df) >= MIN_STARTS_FOR_DB_FEATURES and gl_col in recent_df.columns:
+                vals = recent_df.sort_values('game_date')[gl_col].tolist()
+                return round(_windowed_mean(vals, window), 1)
+
+        # Fallback: season stats
+        if pitcher_df is not None:
+            games = _get_rolling_stat(player_name, pitcher_df, 'G')
+            if not games or games == 0:
+                return None
+            if gl_col == 'Outs':
+                ip = _get_rolling_stat(player_name, pitcher_df, 'IP') or 0
+                return round((ip * 3) / games, 1)
+            total = _get_rolling_stat(player_name, pitcher_df, season_col) or 0
+            return round(total / games, 1)
+
+    elif market_name.startswith('batter'):
+        if batter_gamelogs_cache:
+            recent_df = batter_gamelogs_cache.get(norm_name)
+            if recent_df is not None and len(recent_df) >= MIN_GAMES_FOR_DB_FEATURES and gl_col in recent_df.columns:
+                vals = recent_df.sort_values('game_date')[gl_col].tolist()
+                return round(_windowed_mean(vals, window), 1)
+
+        if batter_df is not None:
+            games = _get_rolling_stat(player_name, batter_df, 'G')
+            if not games or games == 0:
+                return None
+            total = _get_rolling_stat(player_name, batter_df, season_col) or 0
+            return round(total / games, 1)
+
+    return None
+
+
 def check_ev(true_prob: float, implied_prob: float) -> dict:
     """Determines if a positive edge exists above the configured threshold."""
     edge = true_prob - implied_prob

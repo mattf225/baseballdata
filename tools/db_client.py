@@ -15,7 +15,7 @@ class DatabaseClient:
             raise ValueError("SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY missing in .env")
         self.supabase: Client = create_client(url, key)
 
-    def log_alert(self, player_name, market, sportsbook, odds_formatted, edge, point=None, game_date=None):
+    def log_alert(self, player_name, market, sportsbook, odds_formatted, edge, point=None, game_date=None, projection=None):
         """Logs a sent alert to the mlb_alert_log table."""
         data = {
             "player_name": player_name,
@@ -28,6 +28,8 @@ class DatabaseClient:
             data["point"] = float(point)
         if game_date is not None:
             data["game_date"] = str(game_date)
+        if projection is not None:
+            data["projection"] = float(projection)
         try:
             self.supabase.table("mlb_alert_log").insert(data).execute()
         except Exception as e:
